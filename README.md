@@ -18,11 +18,15 @@ The project is organized around two pieces:
 
 - **Zelda3 Voxel** — the game runtime with the voxel presentation renderer.
 - **Zelda3 Voxel Launcher** — a Windows launcher with a cinematic product page,
-  settings, and one-click startup.
+  full Zelda3 configuration, and one-click startup.
 
 The launcher is the recommended way to start the Windows build. It writes the
 selected settings to `zelda3.ini`, keeps the runtime working directory correct,
 and launches the game with the local generated asset pack.
+
+Its settings tabs cover the original Zelda3 configuration sections—graphics,
+audio and MSU, widescreen and general behavior, gameplay features, keyboard
+bindings, and gamepad bindings—alongside the voxel presentation controls.
 
 ## Current features
 

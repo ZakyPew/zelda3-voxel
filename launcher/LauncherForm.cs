@@ -15,12 +15,50 @@ internal sealed class LauncherForm : Form
     private readonly CheckBox voxel = MakeCheck("Enable voxel diorama", true);
     private readonly CheckBox flatHud = MakeCheck("Keep only HUD elements flat", true);
     private readonly CheckBox filtering = MakeCheck("Smooth texture filtering", false);
-    private readonly CheckBox audio = MakeCheck("Enable audio", true);
     private readonly ComboBox voxelSize = new();
     private readonly TrackBar voxelHeight = new();
+    private readonly NumericUpDown voxelHudHeight = new();
     private readonly Label heightValue = MakeLabel("55%", 10, Gold);
     private readonly ComboBox fullscreen = new();
     private readonly NumericUpDown windowScale = new();
+    private readonly ComboBox outputMethod = new();
+    private readonly TextBox windowSize = new();
+    private readonly CheckBox enhancedMode7 = MakeCheck("Enhanced Mode 7", false);
+    private readonly CheckBox newRenderer = MakeCheck("Use enhanced renderer", true);
+    private readonly CheckBox ignoreAspectRatio = MakeCheck("Ignore aspect ratio", false);
+    private readonly CheckBox noSpriteLimits = MakeCheck("Remove sprite limits", false);
+    private readonly CheckBox dimFlashes = MakeCheck("Dim bright flashes", false);
+    private readonly CheckBox displayPerf = MakeCheck("Show performance in title", false);
+    private readonly CheckBox disableFrameDelay = MakeCheck("Disable frame delay", false);
+    private readonly TextBox shader = new();
+    private readonly TextBox linkGraphics = new();
+    private readonly CheckBox autosave = MakeCheck("Enable autosave", false);
+    private readonly ComboBox aspectRatio = new();
+    private readonly ComboBox language = new();
+    private readonly CheckBox enableAudio = MakeCheck("Enable audio", true);
+    private readonly NumericUpDown audioFreq = new();
+    private readonly NumericUpDown audioChannels = new();
+    private readonly NumericUpDown audioSamples = new();
+    private readonly ComboBox msuMode = new();
+    private readonly TextBox msuPath = new();
+    private readonly NumericUpDown msuVolume = new();
+    private readonly CheckBox resumeMsu = MakeCheck("Resume MSU audio", false);
+    private readonly CheckBox itemSwitch = MakeCheck("Switch items with L/R", false);
+    private readonly CheckBox itemSwitchLimit = MakeCheck("Limit L/R item switching", false);
+    private readonly CheckBox turnWhileDashing = MakeCheck("Turn while dashing", false);
+    private readonly CheckBox mirrorDarkworld = MakeCheck("Mirror to Dark World", false);
+    private readonly CheckBox collectSword = MakeCheck("Collect items with sword", false);
+    private readonly CheckBox breakPots = MakeCheck("Break pots with sword", false);
+    private readonly CheckBox disableLowHealth = MakeCheck("Disable low-health beep", false);
+    private readonly CheckBox skipIntro = MakeCheck("Skip intro on keypress", false);
+    private readonly CheckBox showMaxItems = MakeCheck("Show max items in yellow", false);
+    private readonly CheckBox moreBombs = MakeCheck("Allow more active bombs", false);
+    private readonly CheckBox moreRupees = MakeCheck("Carry more rupees", false);
+    private readonly CheckBox miscBugFixes = MakeCheck("Enable miscellaneous bug fixes", false);
+    private readonly CheckBox gameChangingBugFixes = MakeCheck("Enable game-changing bug fixes", false);
+    private readonly CheckBox cancelBirdTravel = MakeCheck("Allow cancelling bird travel", false);
+    private readonly TextBox keyMap = new();
+    private readonly TextBox gamepadMap = new();
     private readonly Label status = MakeLabel(string.Empty, 9, Soft);
     private readonly Panel homePage = new() { Dock = DockStyle.Fill, BackColor = Color.Transparent };
     private readonly Panel settingsPage = new() { Dock = DockStyle.Fill, BackColor = Night, Visible = false };
@@ -66,33 +104,100 @@ internal sealed class LauncherForm : Form
 
     private void BuildSettingsPage()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 3, Padding = new Padding(52), BackColor = Night };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 100)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Padding = new Padding(42), BackColor = Night };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         settingsPage.Controls.Add(root);
         var heading = new Panel { Dock = DockStyle.Fill, BackColor = Night };
-        var title = MakeLabel("SETTINGS", 27, Color.White, FontStyle.Bold, "Georgia"); title.Dock = DockStyle.Top; title.Height = 50;
-        var copy = MakeLabel("Tune the diorama and original runtime.", 10, Soft); copy.Dock = DockStyle.Top;
-        heading.Controls.Add(copy); heading.Controls.Add(title); root.Controls.Add(heading, 0, 0); root.SetColumnSpan(heading, 3);
+        var title = MakeLabel("SETTINGS", 27, Color.White, FontStyle.Bold, "Georgia"); title.Dock = DockStyle.Top; title.Height = 42;
+        var copy = MakeLabel("Configure the diorama and the original Zelda3 runtime.", 10, Soft); copy.Dock = DockStyle.Top;
+        heading.Controls.Add(copy); heading.Controls.Add(title); root.Controls.Add(heading, 0, 0);
 
-        var voxelCard = MakeCard("DIORAMA"); var vf = (FlowLayoutPanel)voxelCard.Controls[0];
-        vf.Controls.Add(voxel); vf.Controls.Add(flatHud); vf.Controls.Add(MakeFieldLabel("Voxel block size"));
-        voxelSize.DropDownStyle = ComboBoxStyle.DropDownList; voxelSize.Items.AddRange(["2 — Fine", "3 — Detailed", "4 — Balanced", "6 — Chunky", "8 — Extra chunky"]);
-        StyleCombo(voxelSize); vf.Controls.Add(voxelSize); vf.Controls.Add(MakeFieldLabel("Extrusion height"));
-        var heightRow = new TableLayoutPanel { Width = 340, Height = 48, ColumnCount = 2, BackColor = Card };
+        var tabs = new TabControl { Dock = DockStyle.Fill, Appearance = TabAppearance.FlatButtons, ItemSize = new Size(132, 30), Padding = new Point(16, 5) };
+        tabs.TabPages.Add(BuildDioramaTab()); tabs.TabPages.Add(BuildGraphicsTab()); tabs.TabPages.Add(BuildSoundTab());
+        tabs.TabPages.Add(BuildGameplayTab()); tabs.TabPages.Add(BuildInputTab());
+        root.Controls.Add(tabs, 0, 1);
+        var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, BackColor = Night };
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        var back = MakeActionButton("BACK", Color.FromArgb(30, 45, 62), Color.White); var save = MakeActionButton("SAVE SETTINGS", Gold, Night);
+        back.Click += (_, _) => ShowHome(); save.Click += (_, _) => { SaveSettings(); ShowHome(); };
+        actions.Controls.Add(new Panel(), 0, 0); actions.Controls.Add(back, 1, 0); actions.Controls.Add(save, 2, 0); root.Controls.Add(actions, 0, 2);
+    }
+
+    private TabPage BuildDioramaTab()
+    {
+        var tab = MakeSettingsTab("Diorama");
+        AddCheck(tab, voxel); AddCheck(tab, flatHud); AddCheck(tab, MakeFieldLabel("Voxel block size"));
+        voxelSize.DropDownStyle = ComboBoxStyle.DropDownList; voxelSize.Items.AddRange(["2 — Fine", "3 — Detailed", "4 — Balanced", "6 — Chunky", "8 — Extra chunky"]); StyleCombo(voxelSize); AddControl(tab, voxelSize);
+        AddControl(tab, MakeFieldLabel("Extrusion height"));
+        var heightRow = new TableLayoutPanel { Width = 520, Height = 48, ColumnCount = 2, BackColor = Card };
         heightRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 84)); heightRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16));
         voxelHeight.Minimum = 5; voxelHeight.Maximum = 100; voxelHeight.TickFrequency = 10; voxelHeight.Dock = DockStyle.Fill;
         voxelHeight.ValueChanged += (_, _) => heightValue.Text = $"{voxelHeight.Value}%"; heightValue.TextAlign = ContentAlignment.MiddleRight;
-        heightRow.Controls.Add(voxelHeight, 0, 0); heightRow.Controls.Add(heightValue, 1, 0); vf.Controls.Add(heightRow); root.Controls.Add(voxelCard, 0, 1);
+        heightRow.Controls.Add(voxelHeight, 0, 0); heightRow.Controls.Add(heightValue, 1, 0); AddControl(tab, heightRow);
+        AddControl(tab, MakeFieldLabel("HUD viewport height (0-96 SNES pixels)"));
+        voxelHudHeight.Minimum = 0; voxelHudHeight.Maximum = 96; voxelHudHeight.Width = 520; StyleNumeric(voxelHudHeight); AddControl(tab, voxelHudHeight);
+        return tab;
+    }
 
-        var displayCard = MakeCard("DISPLAY & SOUND"); var df = (FlowLayoutPanel)displayCard.Controls[0];
-        df.Controls.Add(MakeFieldLabel("Display mode")); fullscreen.DropDownStyle = ComboBoxStyle.DropDownList;
-        fullscreen.Items.AddRange(["Windowed", "Borderless fullscreen", "Exclusive fullscreen"]); StyleCombo(fullscreen); df.Controls.Add(fullscreen);
-        df.Controls.Add(MakeFieldLabel("Window scale")); windowScale.Minimum = 1; windowScale.Maximum = 8; windowScale.Width = 340; windowScale.BackColor = Night; windowScale.ForeColor = Color.White;
-        df.Controls.Add(windowScale); df.Controls.Add(filtering); df.Controls.Add(audio); root.Controls.Add(displayCard, 1, 1); root.SetColumnSpan(displayCard, 2);
-        var back = MakeActionButton("BACK", Color.FromArgb(30, 45, 62), Color.White); var save = MakeActionButton("SAVE SETTINGS", Gold, Night);
-        back.Click += (_, _) => ShowHome(); save.Click += (_, _) => { SaveSettings(); ShowHome(); };
-        root.Controls.Add(back, 1, 2); root.Controls.Add(save, 2, 2);
+    private TabPage BuildGraphicsTab()
+    {
+        var tab = MakeSettingsTab("Graphics");
+        AddControl(tab, MakeFieldLabel("Output renderer")); outputMethod.Items.AddRange(["OpenGL", "SDL", "SDL-Software", "OpenGL ES"]); outputMethod.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(outputMethod); AddControl(tab, outputMethod);
+        AddControl(tab, MakeFieldLabel("Window size (for example 1280x720 or Auto)")); windowSize.Width = 520; StyleText(windowSize); AddControl(tab, windowSize);
+        AddControl(tab, MakeFieldLabel("Window mode")); fullscreen.Items.AddRange(["Windowed", "Borderless fullscreen", "Exclusive fullscreen"]); fullscreen.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(fullscreen); AddControl(tab, fullscreen);
+        AddControl(tab, MakeFieldLabel("Window scale (1-8)")); windowScale.Minimum = 1; windowScale.Maximum = 8; windowScale.Width = 520; StyleNumeric(windowScale); AddControl(tab, windowScale);
+        AddCheck(tab, newRenderer); AddCheck(tab, enhancedMode7); AddCheck(tab, ignoreAspectRatio); AddCheck(tab, filtering); AddCheck(tab, noSpriteLimits); AddCheck(tab, dimFlashes); AddCheck(tab, displayPerf); AddCheck(tab, disableFrameDelay);
+        AddControl(tab, MakeFieldLabel("Shader file (optional)")); shader.Width = 520; StyleText(shader); AddControl(tab, shader);
+        AddControl(tab, MakeFieldLabel("Link graphics file (optional)")); linkGraphics.Width = 520; StyleText(linkGraphics); AddControl(tab, linkGraphics);
+        return tab;
+    }
+
+    private TabPage BuildSoundTab()
+    {
+        var tab = MakeSettingsTab("Sound");
+        AddCheck(tab, enableAudio);
+        AddControl(tab, MakeFieldLabel("Audio frequency")); ConfigureNumeric(audioFreq, 8000, 192000, 32000); AddControl(tab, audioFreq);
+        AddControl(tab, MakeFieldLabel("Audio channels")); ConfigureNumeric(audioChannels, 1, 8, 2); AddControl(tab, audioChannels);
+        AddControl(tab, MakeFieldLabel("Audio samples")); ConfigureNumeric(audioSamples, 128, 4096, 1024); AddControl(tab, audioSamples);
+        AddControl(tab, MakeFieldLabel("MSU audio mode")); msuMode.Items.AddRange(["Disabled", "MSU", "MSU Deluxe", "Opuz", "MSU Deluxe + Opuz"]); msuMode.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(msuMode); AddControl(tab, msuMode);
+        AddControl(tab, MakeFieldLabel("MSU path")); msuPath.Width = 520; StyleText(msuPath); AddControl(tab, msuPath);
+        AddControl(tab, MakeFieldLabel("MSU volume (0-100)")); ConfigureNumeric(msuVolume, 0, 100, 100); AddControl(tab, msuVolume); AddCheck(tab, resumeMsu);
+        return tab;
+    }
+
+    private TabPage BuildGameplayTab()
+    {
+        var tab = MakeSettingsTab("Gameplay");
+        AddCheck(tab, autosave); AddControl(tab, MakeFieldLabel("Aspect ratio")); aspectRatio.Items.AddRange(["4:3", "16:9", "16:10", "18:9", "16:9 + extended vertical"]); aspectRatio.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(aspectRatio); AddControl(tab, aspectRatio);
+        AddControl(tab, MakeFieldLabel("Language")); language.Items.AddRange(["English", "Japanese", "French", "German", "Spanish", "Italian"]); language.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(language); AddControl(tab, language);
+        AddCheck(tab, itemSwitch); AddCheck(tab, itemSwitchLimit); AddCheck(tab, turnWhileDashing); AddCheck(tab, mirrorDarkworld); AddCheck(tab, collectSword); AddCheck(tab, breakPots); AddCheck(tab, disableLowHealth); AddCheck(tab, skipIntro); AddCheck(tab, showMaxItems); AddCheck(tab, moreBombs); AddCheck(tab, moreRupees); AddCheck(tab, miscBugFixes); AddCheck(tab, gameChangingBugFixes); AddCheck(tab, cancelBirdTravel);
+        return tab;
+    }
+
+    private TabPage BuildInputTab()
+    {
+        var tab = MakeSettingsTab("Input");
+        AddControl(tab, MakeFieldLabel("Keyboard bindings (comma-separated; see Zelda3 key names)")); keyMap.Multiline = true; keyMap.ScrollBars = ScrollBars.Vertical; keyMap.Width = 520; keyMap.Height = 92; StyleText(keyMap); AddControl(tab, keyMap);
+        AddControl(tab, MakeFieldLabel("Gamepad bindings (comma-separated)")); gamepadMap.Multiline = true; gamepadMap.ScrollBars = ScrollBars.Vertical; gamepadMap.Width = 520; gamepadMap.Height = 92; StyleText(gamepadMap); AddControl(tab, gamepadMap);
+        var note = MakeLabel("Leave either field blank to use Zelda3 defaults. Advanced bindings are written directly to the original [KeyMap] and [GamepadMap] sections.", 9, Soft); note.Width = 520; note.Height = 46; AddControl(tab, note);
+        return tab;
+    }
+
+    private static TabPage MakeSettingsTab(string title)
+    {
+        var tab = new TabPage(title) { BackColor = Night, ForeColor = Color.White, Padding = new Padding(10) };
+        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = Night };
+        tab.Controls.Add(flow); return tab;
+    }
+
+    private static void AddControl(TabPage tab, Control control) => ((FlowLayoutPanel)tab.Controls[0]).Controls.Add(control);
+    private static void AddCheck(TabPage tab, Control control) => AddControl(tab, control);
+    private static void StyleText(TextBox box) { box.BackColor = Color.FromArgb(18, 31, 48); box.ForeColor = Color.White; box.BorderStyle = BorderStyle.FixedSingle; }
+    private static void StyleNumeric(NumericUpDown control) { control.BackColor = Night; control.ForeColor = Color.White; }
+    private static void ConfigureNumeric(NumericUpDown control, decimal min, decimal max, decimal value) { control.Minimum = min; control.Maximum = max; control.Value = value; control.Width = 520; StyleNumeric(control); }
+    private static void ConfigureValue(NumericUpDown control, string text, decimal min, decimal max, decimal fallback)
+    {
+        control.Minimum = min; control.Maximum = max; control.Value = decimal.TryParse(text, out var value) ? Math.Clamp(value, min, max) : fallback;
     }
 
     private Panel MakeCard(string heading)
@@ -110,22 +215,77 @@ internal sealed class LauncherForm : Form
     private void LoadSettings()
     {
         var ini = new IniFile(Path.Combine(gameDirectory, "zelda3.ini"));
+        outputMethod.SelectedIndex = ini.Get("Graphics", "OutputMethod", "OpenGL").ToUpperInvariant() switch { "SDL" => 1, "SDL-SOFTWARE" => 2, "OPENGL ES" => 3, _ => 0 };
+        windowSize.Text = ini.Get("Graphics", "WindowSize", "Auto");
+        windowSize.Text = string.IsNullOrWhiteSpace(windowSize.Text) ? "Auto" : windowSize.Text;
+        enhancedMode7.Checked = ReadBool(ini.Get("Graphics", "EnhancedMode7", "false"));
+        newRenderer.Checked = ReadBool(ini.Get("Graphics", "NewRenderer", "true"));
+        ignoreAspectRatio.Checked = ReadBool(ini.Get("Graphics", "IgnoreAspectRatio", "false"));
+        filtering.Checked = ReadBool(ini.Get("Graphics", "LinearFiltering", "false"));
+        noSpriteLimits.Checked = ReadBool(ini.Get("Graphics", "NoSpriteLimits", "false"));
+        dimFlashes.Checked = ReadBool(ini.Get("Graphics", "DimFlashes", "false"));
+        displayPerf.Checked = ReadBool(ini.Get("General", "DisplayPerfInTitle", "false"));
+        disableFrameDelay.Checked = ReadBool(ini.Get("General", "DisableFrameDelay", "false"));
+        shader.Text = ini.Get("Graphics", "Shader", "");
+        linkGraphics.Text = ini.Get("Graphics", "LinkGraphics", "");
         voxel.Checked = ReadBool(ini.Get("Graphics", "VoxelMode", "true")); flatHud.Checked = !ReadBool(ini.Get("Graphics", "VoxelizeHud", "false"));
-        filtering.Checked = ReadBool(ini.Get("Graphics", "LinearFiltering", "false")); audio.Checked = ReadBool(ini.Get("Sound", "EnableAudio", "true"));
         var size = int.TryParse(ini.Get("Graphics", "VoxelSize", "4"), out var parsedSize) ? parsedSize : 4;
         voxelSize.SelectedIndex = size switch { 2 => 0, 3 => 1, 6 => 3, 8 => 4, _ => 2 };
         voxelHeight.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelHeight", "55"), out var h) ? h : 55, 5, 100);
+        voxelHudHeight.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelHudHeight", "48"), out var hud) ? hud : 48, 0, 96);
         fullscreen.SelectedIndex = Math.Clamp(int.TryParse(ini.Get("Graphics", "Fullscreen", "0"), out var f) ? f : 0, 0, 2);
         windowScale.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "WindowScale", "2"), out var s) ? s : 2, 1, 8);
+        enableAudio.Checked = ReadBool(ini.Get("Sound", "EnableAudio", "true"));
+        ConfigureValue(audioFreq, ini.Get("Sound", "AudioFreq", "44100"), 8000, 192000, 44100);
+        ConfigureValue(audioChannels, ini.Get("Sound", "AudioChannels", "2"), 1, 8, 2);
+        ConfigureValue(audioSamples, ini.Get("Sound", "AudioSamples", "1024"), 128, 4096, 1024);
+        msuMode.SelectedIndex = ini.Get("Sound", "EnableMSU", "0").ToLowerInvariant() switch { "msu" or "1" => 1, "deluxe" or "2" => 2, "opuz" or "4" => 3, "deluxe-opuz" or "6" => 4, _ => 0 };
+        msuPath.Text = ini.Get("Sound", "MSUPath", "");
+        ConfigureValue(msuVolume, ini.Get("Sound", "MSUVolume", "100"), 0, 100, 100);
+        resumeMsu.Checked = ReadBool(ini.Get("Sound", "ResumeMSU", "false"));
+        autosave.Checked = ReadBool(ini.Get("General", "Autosave", "false"));
+        var ratio = ini.Get("General", "ExtendedAspectRatio", "4:3").ToLowerInvariant();
+        aspectRatio.SelectedIndex = ratio.Contains("extend_y") ? 4 : ratio.Contains("16:10") ? 2 : ratio.Contains("18:9") ? 3 : ratio.Contains("16:9") ? 1 : 0;
+        language.SelectedIndex = ini.Get("General", "Language", "English").ToLowerInvariant() switch { "japanese" or "jp" => 1, "french" => 2, "german" => 3, "spanish" => 4, "italian" => 5, _ => 0 };
+        itemSwitch.Checked = ReadBool(ini.Get("Features", "ItemSwitchLR", "false"));
+        itemSwitchLimit.Checked = ReadBool(ini.Get("Features", "ItemSwitchLRLimit", "false"));
+        turnWhileDashing.Checked = ReadBool(ini.Get("Features", "TurnWhileDashing", "false"));
+        mirrorDarkworld.Checked = ReadBool(ini.Get("Features", "MirrorToDarkworld", "false"));
+        collectSword.Checked = ReadBool(ini.Get("Features", "CollectItemsWithSword", "false"));
+        breakPots.Checked = ReadBool(ini.Get("Features", "BreakPotsWithSword", "false"));
+        disableLowHealth.Checked = ReadBool(ini.Get("Features", "DisableLowHealthBeep", "false"));
+        skipIntro.Checked = ReadBool(ini.Get("Features", "SkipIntroOnKeypress", "false"));
+        showMaxItems.Checked = ReadBool(ini.Get("Features", "ShowMaxItemsInYellow", "false"));
+        moreBombs.Checked = ReadBool(ini.Get("Features", "MoreActiveBombs", "false"));
+        moreRupees.Checked = ReadBool(ini.Get("Features", "CarryMoreRupees", "false"));
+        miscBugFixes.Checked = ReadBool(ini.Get("Features", "MiscBugFixes", "false"));
+        gameChangingBugFixes.Checked = ReadBool(ini.Get("Features", "GameChangingBugFixes", "false"));
+        cancelBirdTravel.Checked = ReadBool(ini.Get("Features", "CancelBirdTravel", "false"));
+        keyMap.Text = ini.Get("KeyMap", "Controls", "");
+        gamepadMap.Text = ini.Get("GamepadMap", "Controls", "");
     }
 
     private void SaveSettings()
     {
         var ini = new IniFile(Path.Combine(gameDirectory, "zelda3.ini")); var sizes = new[] { 2, 3, 4, 6, 8 };
-        ini.Set("Graphics", "OutputMethod", "OpenGL"); ini.Set("Graphics", "NewRenderer", "true"); ini.Set("Graphics", "VoxelMode", Bool(voxel.Checked));
-        ini.Set("Graphics", "VoxelizeHud", Bool(!flatHud.Checked)); ini.Set("Graphics", "VoxelSize", sizes[Math.Max(0, voxelSize.SelectedIndex)].ToString());
-        ini.Set("Graphics", "VoxelHeight", voxelHeight.Value.ToString()); ini.Set("Graphics", "VoxelHudHeight", "48"); ini.Set("Graphics", "Fullscreen", fullscreen.SelectedIndex.ToString());
-        ini.Set("Graphics", "WindowScale", windowScale.Value.ToString()); ini.Set("Graphics", "LinearFiltering", Bool(filtering.Checked)); ini.Set("Sound", "EnableAudio", Bool(audio.Checked)); ini.Save();
+        ini.Set("Graphics", "OutputMethod", new[] { "OpenGL", "SDL", "SDL-Software", "OpenGL ES" }[Math.Max(0, outputMethod.SelectedIndex)]);
+        ini.Set("Graphics", "WindowSize", string.IsNullOrWhiteSpace(windowSize.Text) ? "Auto" : windowSize.Text.Trim());
+        ini.Set("Graphics", "EnhancedMode7", Bool(enhancedMode7.Checked)); ini.Set("Graphics", "NewRenderer", Bool(newRenderer.Checked));
+        ini.Set("Graphics", "IgnoreAspectRatio", Bool(ignoreAspectRatio.Checked)); ini.Set("Graphics", "Fullscreen", fullscreen.SelectedIndex.ToString());
+        ini.Set("Graphics", "WindowScale", windowScale.Value.ToString()); ini.Set("Graphics", "LinearFiltering", Bool(filtering.Checked)); ini.Set("Graphics", "NoSpriteLimits", Bool(noSpriteLimits.Checked));
+        ini.Set("Graphics", "VoxelMode", Bool(voxel.Checked)); ini.Set("Graphics", "VoxelizeHud", Bool(!flatHud.Checked)); ini.Set("Graphics", "VoxelSize", sizes[Math.Max(0, voxelSize.SelectedIndex)].ToString());
+        ini.Set("Graphics", "VoxelHeight", voxelHeight.Value.ToString()); ini.Set("Graphics", "VoxelHudHeight", voxelHudHeight.Value.ToString()); ini.Set("Graphics", "Shader", shader.Text.Trim()); ini.Set("Graphics", "LinkGraphics", linkGraphics.Text.Trim());
+        ini.Set("Graphics", "DimFlashes", Bool(dimFlashes.Checked)); ini.Set("General", "Autosave", Bool(autosave.Checked)); ini.Set("General", "DisplayPerfInTitle", Bool(displayPerf.Checked)); ini.Set("General", "DisableFrameDelay", Bool(disableFrameDelay.Checked));
+        ini.Set("General", "ExtendedAspectRatio", new[] { "4:3", "16:9", "16:10", "18:9", "extend_y, 16:9" }[Math.Max(0, aspectRatio.SelectedIndex)]);
+        ini.Set("General", "Language", new[] { "English", "Japanese", "French", "German", "Spanish", "Italian" }[Math.Max(0, language.SelectedIndex)]);
+        ini.Set("Sound", "EnableAudio", Bool(enableAudio.Checked)); ini.Set("Sound", "AudioFreq", audioFreq.Value.ToString()); ini.Set("Sound", "AudioChannels", audioChannels.Value.ToString()); ini.Set("Sound", "AudioSamples", audioSamples.Value.ToString());
+        ini.Set("Sound", "EnableMSU", new[] { "0", "msu", "deluxe", "opuz", "deluxe-opuz" }[Math.Max(0, msuMode.SelectedIndex)]); ini.Set("Sound", "MSUPath", msuPath.Text.Trim()); ini.Set("Sound", "MSUVolume", msuVolume.Value.ToString()); ini.Set("Sound", "ResumeMSU", Bool(resumeMsu.Checked));
+        ini.Set("Features", "ItemSwitchLR", Bool(itemSwitch.Checked)); ini.Set("Features", "ItemSwitchLRLimit", Bool(itemSwitchLimit.Checked)); ini.Set("Features", "TurnWhileDashing", Bool(turnWhileDashing.Checked)); ini.Set("Features", "MirrorToDarkworld", Bool(mirrorDarkworld.Checked));
+        ini.Set("Features", "CollectItemsWithSword", Bool(collectSword.Checked)); ini.Set("Features", "BreakPotsWithSword", Bool(breakPots.Checked)); ini.Set("Features", "DisableLowHealthBeep", Bool(disableLowHealth.Checked)); ini.Set("Features", "SkipIntroOnKeypress", Bool(skipIntro.Checked)); ini.Set("Features", "ShowMaxItemsInYellow", Bool(showMaxItems.Checked));
+        ini.Set("Features", "MoreActiveBombs", Bool(moreBombs.Checked)); ini.Set("Features", "CarryMoreRupees", Bool(moreRupees.Checked)); ini.Set("Features", "MiscBugFixes", Bool(miscBugFixes.Checked)); ini.Set("Features", "GameChangingBugFixes", Bool(gameChangingBugFixes.Checked)); ini.Set("Features", "CancelBirdTravel", Bool(cancelBirdTravel.Checked));
+        if (!string.IsNullOrWhiteSpace(keyMap.Text)) ini.Set("KeyMap", "Controls", keyMap.Text.Trim());
+        if (!string.IsNullOrWhiteSpace(gamepadMap.Text)) ini.Set("GamepadMap", "Controls", gamepadMap.Text.Trim());
+        ini.Save();
     }
 
     private void PlayGame()
