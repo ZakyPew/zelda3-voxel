@@ -32,6 +32,7 @@ enum {
   kKeys_WindowSmaller,
   kKeys_DisplayPerf,
   kKeys_ToggleRenderer,
+  kKeys_ToggleVoxel,
   kKeys_VolumeUp,
   kKeys_VolumeDown,
   kKeys_Total,
@@ -62,6 +63,11 @@ typedef struct Config {
   uint8 extended_aspect_ratio;
   bool extend_y;
   bool no_sprite_limits;
+  bool voxel_mode;
+  bool voxelize_hud;
+  uint8 voxel_size;
+  uint8 voxel_height;
+  uint8 voxel_hud_height;
   bool display_perf_title;
   uint8 enable_msu;
   bool resume_msu;

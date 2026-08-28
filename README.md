@@ -1,178 +1,191 @@
-# Zelda3
-A reimplementation of Zelda 3.
+# Zelda3 Voxel
 
-Our discord server is: https://discord.gg/AJJbJAzNNJ
+Zelda3 Voxel is a new presentation layer for the reverse-engineered **The
+Legend of Zelda: A Link to the Past** reimplementation. It keeps the original
+gameplay, collision, saves, controls, and ROM-verified logic while presenting
+the playfield as a stylized, depth-tested voxel diorama.
 
-## About
+It is a standalone ZakyPew project inspired by the presentation work in
+Epoch/Equinox and the Gen1 Recomp project. The goal is a polished, configurable
+voxel Zelda experience built on top of the proven Zelda3 reimplementation.
 
-This is a reverse engineered clone of Zelda 3 - A Link to the Past.
+> Zelda3 Voxel is an unofficial fan project and is not affiliated with or
+> endorsed by Nintendo.
 
-It's around 70-80kLOC of C code, and reimplements all parts of the original game. The game is playable from start to end.
+## The product
 
-You need a copy of the ROM to extract game resources (levels, images). Then once that's done, the ROM is no longer needed.
+The project is organized around two pieces:
 
-It uses the PPU and DSP implementation from [LakeSnes](https://github.com/elzo-d/LakeSnes), but with lots of speed optimizations.
-Additionally, it can be configured to also run the original machine code side by side. Then the RAM state is compared after each frame, to verify that the C implementation is correct.
+- **Zelda3 Voxel** — the game runtime with the voxel presentation renderer.
+- **Zelda3 Voxel Launcher** — a Windows launcher with a cinematic product page,
+  settings, and one-click startup.
 
-I got much assistance from spannerism's Zelda 3 JP disassembly and the other ones that documented loads of function names and variables.
+The launcher is the recommended way to start the Windows build. It writes the
+selected settings to `zelda3.ini`, keeps the runtime working directory correct,
+and launches the game with the local generated asset pack.
 
-## Additional features
+## Current features
 
-A bunch of features have been added that are not supported by the original game. Some of them are:
+- Voxelized, depth-tested playfield generated from the original framebuffer.
+- Forward-facing chase-camera perspective inspired by Gen1 Recomp.
+- Separate world and HUD viewports so the 3D scene cannot project behind HUD
+  elements.
+- Original HUD and menus kept flat and readable.
+- Voxel presentation limited to active dungeon and overworld gameplay modules;
+  title, file select, naming, dialogs, game over, and ending screens remain 2D.
+- Runtime toggle with the `3` key.
+- Configurable voxel mode, HUD treatment, sampling size, extrusion height,
+  camera scale, fullscreen, filtering, audio, and display settings.
+- Original Zelda3 controls, snapshots, replay tools, saves, and enhanced
+  widescreen support remain available.
 
-Support for pixel shaders.
+## Inherited Zelda3 features
 
-Support for enhanced aspect ratios of 16:9 or 16:10.
+The voxel presentation is our project. The following game systems and features
+come from the underlying Zelda3 reimplementation and should be credited to its
+original authors and contributors:
 
-Higher quality world map.
+| Feature | Attribution |
+| --- | --- |
+| Reverse-engineered C reimplementation of the complete game | [snesrev](https://github.com/snesrev/zelda3) and Zelda3 contributors |
+| ROM extraction pipeline and runtime asset format | Zelda3 authors and contributors |
+| Original gameplay logic, collision, menus, saves, controls, and snapshots | Zelda3 authors and contributors |
+| PPU and DSP emulation foundation | [LakeSnes](https://github.com/elzo-d/LakeSnes), with Zelda3 integration and optimizations |
+| Function names, variables, and disassembly research | [spannerism](https://github.com/spannerism) and the documented Zelda3 disassembly contributors |
+| Widescreen, pixel shaders, MSU audio, secondary item slot, and other enhancements | Zelda3 authors and contributors |
 
-Support for MSU audio tracks.
+Zelda3 Voxel does not claim authorship of those systems. Our additions are the
+voxel presentation pass, chase-camera projection, HUD/world viewport
+composition, launcher, product packaging, and related configuration work.
 
-Secondary item slot on button X (Hold X in inventory to select).
+## Status
 
-Switching current item with L/R keys.
+This is an active presentation prototype, not a finished commercial release.
+The current voxel pass is framebuffer-derived, so terrain, Link, enemies,
+particles, and foreground objects are not yet separated into individual 3D
+systems. The next renderer milestones are tile-aware terrain extraction,
+upright sprite billboards, player grounding, configurable camera controls, and
+keeping the voxel world visible beneath independently composited dialogs.
 
-## How to Play:
+## Windows quick start
 
-Option 1: Launcher by RadzPrower (windows only) https://github.com/ajohns6/Zelda-3-Launcher
+1. Obtain a legal US copy of the original ROM. The expected file is named
+   `zelda3.sfc`.
+2. Run the asset extraction step once to create the local
+   `zelda3_assets.dat` runtime pack.
+3. Start `build/Release/Zelda3 Voxel Launcher.exe`.
+4. Use **Settings** to choose voxel presentation and display options, then
+   select **Launch Zelda3 Voxel**.
 
-Option 2: Building it yourself
+The ROM and generated asset pack are local runtime inputs. They are not
+included in this repository or distributed by this project.
 
-Visit Wiki for more info on building the project: https://github.com/snesrev/zelda3/wiki
+## Launcher
 
-## Installing Python & libraries on Windows (required for asset extraction steps)
-1. Download [Python](https://www.python.org/ftp/python/3.11.1/python-3.11.1-amd64.exe) installer and install with "Add to PATH" checkbox checked
-2. Open the command prompt
-3. Type `python -m pip install --upgrade pip pillow pyyaml` and hit enter
-4. Close the command prompt
+The launcher source is in [`launcher/`](launcher/). To publish the Windows
+launcher from the repository root:
 
-## Compiling on Windows with TCC (1mb Tiny C Compiler)
-1. Download the project by clicking "Code > Download ZIP" on the github page
-2. Extract the ZIP to your hard drive
-3. Place the USA rom named `zelda3.sfc` in the root directory.
-4. Double-click `extract_assets.bat` in the main dir to create `zelda3_assets.dat` in that same dir
-5. Download [TCC](https://github.com/FitzRoyX/tinycc/releases/download/tcc_20221020/tcc_20221020.zip) and extract to the "\third_party" subfolder
-6. Download [SDL2](https://github.com/libsdl-org/SDL/releases/download/release-2.26.3/SDL2-devel-2.26.3-VC.zip) and extract to the "\third_party" subfolder
-7. Double-click `run_with_tcc.bat` in the main dir to create `zelda3.exe` in that same dir
-8. Configure with `zelda3.ini` in the main dir
-
-## Compiling on Windows with Visual Studio (4.5gb IDE and compiler)
-Same Steps 1-4 above<br/>
-8. Double-click `Zelda3.sln`<br/>
-9. Install the **Desktop development with C++** workload with the VS Installer if you don't have it already (it should prompt you to do this).<br/>
-10. Change "debug" to "release" in the top dropdown<br/>
-12. Choose "build > build Zelda3" in the menu to create `zelda3.exe` in the "/bin/release" subfolder<br/>
-13. Configure with `zelda3.ini` in the main dir<br/>
-
-## Installing libraries on Linux/MacOS
-1. Open a terminal
-2. Install pip if not already installed
-```sh
-python3 -m ensurepip
+```powershell
+dotnet publish launcher\Zelda3VoxelLauncher.csproj -c Release -r win-x64 --self-contained false -o build\Release
 ```
-3. Clone the repo and `cd` into it
-```sh
-git clone https://github.com/snesrev/zelda3
-cd zelda3
+
+The launcher expects the game executable and generated asset pack in the same
+directory as the published launcher, or in the configured project directory.
+
+## Building the game
+
+### Windows with CMake
+
+```powershell
+cmake -S . -B build -A x64
+cmake --build build --config Release --parallel 8
 ```
-4. Install requirements using pip
+
+### Linux and macOS
+
+Install SDL2 development libraries and the Python packages used by the asset
+pipeline, then build with:
+
 ```sh
 python3 -m pip install -r requirements.txt
-```
-5. Install SDL2
-* Ubuntu/Debian `sudo apt install libsdl2-dev`
-* Fedora Linux `sudo dnf install SDL2-devel`
-* Arch Linux `sudo pacman -S sdl2`
-* macOS: `brew install sdl2` (you can get homebrew [here](https://brew.sh/))
-
-## Compiling on Linux/MacOS
-1. Place your US ROM file named `zelda3.sfc` in `zelda3`
-2. Compile
-```sh
 make
 ```
-<details>
-<summary>
-Advanced make usage ...
-</summary>
 
-```sh
-make -j$(nproc) # run on all core
-make clean all  # clear gen+obj and rebuild
-CC=clang make   # specify compiler
-```
-</details>
+The upstream Zelda3 build documentation contains additional platform and
+toolchain notes: [Zelda3 build wiki](https://github.com/snesrev/zelda3/wiki).
 
-## Nintendo Switch
+## Configuration
 
-You need [DevKitPro](https://devkitpro.org/wiki/Getting_Started) and [Atmosphere](https://github.com/Atmosphere-NX/Atmosphere) installed.
+The sample [`zelda3.ini`](zelda3.ini) contains the product defaults:
 
-```sh
-(dkp-)pacman -S git switch-dev switch-sdl2 switch-tools
-cd platform/switch
-make # Add -j$(nproc) to build using all cores ( Optional )
-# You can test the build directly onto the switch ( Optional )
-nxlink -s zelda3.nro
+```ini
+[Graphics]
+OutputMethod=OpenGL
+VoxelMode=true
+VoxelizeHud=false
+VoxelSize=4
+VoxelHeight=55
+VoxelHudHeight=48
 ```
 
-## More Compilation Help
+Important controls:
 
-Look at the wiki at https://github.com/snesrev/zelda3/wiki for more help.
+| Setting | Purpose |
+| --- | --- |
+| `VoxelMode` | Enables the voxel presentation at startup. |
+| `VoxelizeHud` | Keeps the HUD flat when `false`; voxelizes it when `true`. |
+| `VoxelSize` | Framebuffer sampling size, from 2 to 12. |
+| `VoxelHeight` | Voxel extrusion strength, from 5 to 100 percent. |
+| `VoxelHudHeight` | Height of the flat HUD viewport in SNES pixels. |
 
-The ROM needs to be named `zelda3.sfc` and has to be from the US region with this exact SHA256 hash
-`66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`
+Press `3` during gameplay to toggle voxel mode without restarting.
 
-In case you're planning to move the executable to a different location, please include the file `zelda3_assets.dat`.
+## Controls
 
-## Usage and controls
+The default game controls are inherited from Zelda3:
 
-The game supports snapshots. The joypad input history is also saved in the snapshot. It's thus possible to replay a playthrough in turbo mode to verify that the game behaves correctly.
+| Action | Key |
+| --- | --- |
+| Up / Down / Left / Right | Arrow keys |
+| Start | Enter |
+| Select | Right Shift |
+| A / B | X / Z |
+| X / Y | S / A |
+| L / R | C / V |
+| Toggle voxel presentation | 3 |
+| Toggle fullscreen | Alt+Enter |
+| Pause | P |
+| Turbo mode | Tab |
 
-The game is run with `./zelda3` and takes an optional path to the ROM-file, which will verify for each frame that the C code matches the original behavior.
+Controls can be remapped in `zelda3.ini`. The original runtime also supports
+snapshots, replay input history, health and inventory test shortcuts, and
+renderer diagnostics.
 
-| Button | Key         |
-| ------ | ----------- |
-| Up     | Up arrow    |
-| Down   | Down arrow  |
-| Left   | Left arrow  |
-| Right  | Right arrow |
-| Start  | Enter       |
-| Select | Right shift |
-| A      | X           |
-| B      | Z           |
-| X      | S           |
-| Y      | A           |
-| L      | C           |
-| R      | V           |
+## Technical foundation
 
-The keys can be reconfigured in zelda3.ini
+Zelda3 Voxel is based on the open-source Zelda3 reverse-engineered
+reimplementation. That project reproduces the original game in C and can
+compare its runtime state against the original machine code for verification.
+The voxel work is intentionally isolated at the presentation boundary so the
+game logic remains compatible with the existing runtime.
 
-Additionally, the following commands are available:
+See [`VOXEL_SLICE.md`](VOXEL_SLICE.md) for the current renderer notes and
+[`CLAUDE_HANDOFF.md`](CLAUDE_HANDOFF.md) for the implementation handoff and
+next technical slice.
 
-| Key | Action                |
-| --- | --------------------- |
-| Tab | Turbo mode |
-| W   | Fill health/magic     |
-| Shift+W   | Fill rupees/bombs/arrows     |
-| Ctrl+E | Reset            |
-| P   | Pause (with dim)                |
-| Shift+P   | Pause (without dim)                |
-| Ctrl+Up   | Increase window size                |
-| Ctrl+Down   | Decrease window size                |
-| T   | Toggle replay turbo mode  |
-| O   | Set dungeon key to 1  |
-| K   | Clear all input history from the joypad log  |
-| L   | Stop replaying a shapshot  |
-| R   | Toggle between fast and slow renderer |
-| F   | Display renderer performance |
-| F1-F10 | Load snapshot      |
-| Alt+Enter | Toggle Fullscreen     |
-| Shift+F1-F10 | Save snapshot |
-| Ctrl+F1-F10 | Replay the snapshot |
-| 1-9 | Load a dungeons playthrough snapshot |
-| Ctrl+1-9 | Run a dungeons playthrough in turbo mode |
+## Credits and attribution
 
+The Zelda3 Voxel product is authored and packaged by ZakyPew. It is built on
+the Zelda3 reimplementation by [snesrev](https://github.com/snesrev/zelda3),
+its contributors, [spannerism](https://github.com/spannerism), the documented
+Zelda3 disassembly contributors, and the [LakeSnes](https://github.com/elzo-d/LakeSnes)
+PPU/DSP foundation.
+
+The presentation direction also draws inspiration from [Epoch & Equinox](https://github.com/ZakyPew/epoch-equinox)
+and the Gen1 Recomp project. Please preserve all upstream attribution and
+license notices when redistributing.
 
 ## License
 
-This project is licensed under the MIT license. See 'LICENSE.txt' for details.
+The underlying Zelda3 reimplementation is licensed under the MIT license. See
+[`LICENSE.txt`](LICENSE.txt) for the repository license text.

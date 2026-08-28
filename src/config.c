@@ -37,8 +37,8 @@ static const uint16 kDefaultKbdControls[kKeys_Total] = {
   N, N, N, N, N, N, N, N, N, N, N, N, N, N, N, N, N, N, N, N,
   // CheatLife, CheatKeys, CheatEquipment, CheatWalkThroughWalls
   _(SDLK_w), _(SDLK_o), S(SDLK_w), C(SDLK_e),
-  // ClearKeyLog, StopReplay, Fullscreen, Reset, Pause, PauseDimmed, Turbo, ReplayTurbo, WindowBigger, WindowSmaller, DisplayPerf, ToggleRenderer
-  _(SDLK_k), _(SDLK_l), A(SDLK_RETURN), C(SDLK_r), S(SDLK_p), _(SDLK_p), _(SDLK_TAB), _(SDLK_t), N, N, _(SDLK_f), _(SDLK_r),
+  // ClearKeyLog, StopReplay, Fullscreen, Reset, Pause, PauseDimmed, Turbo, ReplayTurbo, WindowBigger, WindowSmaller, DisplayPerf, ToggleRenderer, ToggleVoxel
+  _(SDLK_k), _(SDLK_l), A(SDLK_RETURN), C(SDLK_r), S(SDLK_p), _(SDLK_p), _(SDLK_TAB), _(SDLK_t), N, N, _(SDLK_f), _(SDLK_r), _(SDLK_3),
 };
 #undef _
 #undef A
@@ -58,7 +58,7 @@ static const KeyNameId kKeyNameId[] = {
   M(Controls), M(Load), M(Save), M(Replay), M(LoadRef), M(ReplayRef),
   S(CheatLife), S(CheatKeys), S(CheatEquipment), S(CheatWalkThroughWalls),
   S(ClearKeyLog), S(StopReplay), S(Fullscreen), S(Reset),
-  S(Pause), S(PauseDimmed), S(Turbo), S(ReplayTurbo), S(WindowBigger), S(WindowSmaller), S(VolumeUp), S(VolumeDown), S(DisplayPerf), S(ToggleRenderer),
+  S(Pause), S(PauseDimmed), S(Turbo), S(ReplayTurbo), S(WindowBigger), S(WindowSmaller), S(VolumeUp), S(VolumeDown), S(DisplayPerf), S(ToggleRenderer), S(ToggleVoxel),
 };
 #undef S
 #undef M
@@ -366,6 +366,19 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       return ParseBool(value, &g_config.linear_filtering);
     } else if (StringEqualsNoCase(key, "NoSpriteLimits")) {
       return ParseBool(value, &g_config.no_sprite_limits);
+    } else if (StringEqualsNoCase(key, "VoxelMode")) {
+      return ParseBool(value, &g_config.voxel_mode);
+    } else if (StringEqualsNoCase(key, "VoxelizeHud")) {
+      return ParseBool(value, &g_config.voxelize_hud);
+    } else if (StringEqualsNoCase(key, "VoxelSize")) {
+      g_config.voxel_size = (uint8)IntMax(2, IntMin(12, atoi(value)));
+      return true;
+    } else if (StringEqualsNoCase(key, "VoxelHeight")) {
+      g_config.voxel_height = (uint8)IntMax(5, IntMin(100, atoi(value)));
+      return true;
+    } else if (StringEqualsNoCase(key, "VoxelHudHeight")) {
+      g_config.voxel_hud_height = (uint8)IntMax(0, IntMin(96, atoi(value)));
+      return true;
     } else if (StringEqualsNoCase(key, "LinkGraphics")) {
       g_config.link_graphics = value;
       return true;
@@ -518,6 +531,9 @@ static bool ParseOneConfigFile(const char *filename, int depth) {
 
 void ParseConfigFile(const char *filename) {
   g_config.msuvolume = 100;  // default msu volume, 100%
+  g_config.voxel_size = 4;
+  g_config.voxel_height = 55;
+  g_config.voxel_hud_height = 48;
 
   if (filename != NULL || !ParseOneConfigFile("zelda3.user.ini", 0)) {
     if (filename == NULL)

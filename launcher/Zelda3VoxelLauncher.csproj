@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationIcon>..\src\platform\win32\triforce.ico</ApplicationIcon>
+    <AssemblyName>Zelda3 Voxel Launcher</AssemblyName>
+    <RootNamespace>Zelda3VoxelLauncher</RootNamespace>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="assets\zelda3-voxel-launcher-hero.png" />
+  </ItemGroup>
+</Project>

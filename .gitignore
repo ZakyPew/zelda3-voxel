@@ -31,3 +31,21 @@ __pycache__
 /sprites-gfx
 /glsl-shaders
 /token.txt
+
+# Zelda3 Voxel local build and launcher output
+/build/
+/launcher/bin/
+/launcher/obj/
+/saves/*.ini
+
+# Generated asset-extraction runtime and Python files
+/assets/overworld/
+/assets/dungeon/
+/assets/Lib/
+/assets/Scripts/
+/assets/__pycache__/
+/assets/*.pyd
+/assets/*.dll
+/assets/python*
+/assets/get-pip.py
+/assets/LICENSE.txt
