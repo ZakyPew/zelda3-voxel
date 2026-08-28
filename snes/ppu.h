@@ -44,6 +44,21 @@ enum {
   kPpuRenderFlags_NoSpriteLimits = 8,
 };
 
+enum {
+  // Every rendered pixel carries a source tag in its (otherwise unused) alpha
+  // byte: 0 for blank/border pixels, else kPpuPixelTag_Valid | layer, where
+  // layer is the compositor's winning-layer nibble: 0/1/3 = BG tiles,
+  // 2 = BG3 (Zelda draws all HUD/dialog/menu UI there), 4/6 = sprites,
+  // 5 = backdrop. Presentation layers (e.g. the voxel renderer) use this to
+  // split terrain, actors and UI without rendering the PPU frame twice.
+  kPpuPixelTag_Valid = 0x10,
+  kPpuPixelTag_LayerMask = 0xf,
+  kPpuPixelTag_Bg3 = 2,
+  kPpuPixelTag_Sprite = 4,
+  kPpuPixelTag_SpriteNoMath = 6,
+  kPpuPixelTag_Backdrop = 5,
+};
+
 
 struct Ppu {
   bool lineHasSprites;

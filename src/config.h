@@ -68,6 +68,8 @@ typedef struct Config {
   uint8 voxel_size;
   uint8 voxel_height;
   uint8 voxel_hud_height;
+  uint8 voxel_pitch;
+  uint8 voxel_zoom;
   bool display_perf_title;
   uint8 enable_msu;
   bool resume_msu;

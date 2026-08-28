@@ -17,8 +17,11 @@ internal sealed class LauncherForm : Form
     private readonly CheckBox filtering = MakeCheck("Smooth texture filtering", false);
     private readonly ComboBox voxelSize = new();
     private readonly TrackBar voxelHeight = new();
-    private readonly NumericUpDown voxelHudHeight = new();
     private readonly Label heightValue = MakeLabel("55%", 10, Gold);
+    private readonly TrackBar voxelPitch = new();
+    private readonly Label pitchValue = MakeLabel("39°", 10, Gold);
+    private readonly TrackBar voxelZoom = new();
+    private readonly Label zoomValue = MakeLabel("100%", 10, Gold);
     private readonly ComboBox fullscreen = new();
     private readonly NumericUpDown windowScale = new();
     private readonly ComboBox outputMethod = new();
@@ -97,7 +100,7 @@ internal sealed class LauncherForm : Form
         folder.Click += (_, _) => Process.Start(new ProcessStartInfo("explorer.exe", gameDirectory) { UseShellExecute = true });
         exit.Click += (_, _) => Close();
         status.SetBounds(61, 525, 320, 42);
-        var version = MakeLabel("VOXEL SLICE 0.1  •  PRESS 3 IN-GAME TO TOGGLE", 8, Color.FromArgb(145, 166, 184));
+        var version = MakeLabel("VOXEL ALPHA 0.2  •  PRESS 3 IN-GAME TO TOGGLE", 8, Color.FromArgb(145, 166, 184));
         version.SetBounds(61, 580, 340, 26);
         left.Controls.AddRange([eyebrow, title, subtitle, rule, start, settings, folder, exit, status, version]);
     }
@@ -129,14 +132,21 @@ internal sealed class LauncherForm : Form
         AddCheck(tab, voxel); AddCheck(tab, flatHud); AddCheck(tab, MakeFieldLabel("Voxel block size"));
         voxelSize.DropDownStyle = ComboBoxStyle.DropDownList; voxelSize.Items.AddRange(["2 — Fine", "3 — Detailed", "4 — Balanced", "6 — Chunky", "8 — Extra chunky"]); StyleCombo(voxelSize); AddControl(tab, voxelSize);
         AddControl(tab, MakeFieldLabel("Extrusion height"));
-        var heightRow = new TableLayoutPanel { Width = 520, Height = 48, ColumnCount = 2, BackColor = Card };
-        heightRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 84)); heightRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16));
-        voxelHeight.Minimum = 5; voxelHeight.Maximum = 100; voxelHeight.TickFrequency = 10; voxelHeight.Dock = DockStyle.Fill;
-        voxelHeight.ValueChanged += (_, _) => heightValue.Text = $"{voxelHeight.Value}%"; heightValue.TextAlign = ContentAlignment.MiddleRight;
-        heightRow.Controls.Add(voxelHeight, 0, 0); heightRow.Controls.Add(heightValue, 1, 0); AddControl(tab, heightRow);
-        AddControl(tab, MakeFieldLabel("HUD viewport height (0-96 SNES pixels)"));
-        voxelHudHeight.Minimum = 0; voxelHudHeight.Maximum = 96; voxelHudHeight.Width = 520; StyleNumeric(voxelHudHeight); AddControl(tab, voxelHudHeight);
+        AddControl(tab, MakeSliderRow(voxelHeight, heightValue, 5, 100, 10, v => $"{v}%"));
+        AddControl(tab, MakeFieldLabel("Camera pitch (degrees of chase tilt)"));
+        AddControl(tab, MakeSliderRow(voxelPitch, pitchValue, 10, 80, 5, v => $"{v}°"));
+        AddControl(tab, MakeFieldLabel("Camera zoom"));
+        AddControl(tab, MakeSliderRow(voxelZoom, zoomValue, 50, 200, 10, v => $"{v}%"));
         return tab;
+    }
+
+    private static TableLayoutPanel MakeSliderRow(TrackBar bar, Label value, int min, int max, int tick, Func<int, string> format)
+    {
+        var row = new TableLayoutPanel { Width = 520, Height = 48, ColumnCount = 2, BackColor = Card };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 84)); row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16));
+        bar.Minimum = min; bar.Maximum = max; bar.TickFrequency = tick; bar.Dock = DockStyle.Fill;
+        bar.ValueChanged += (_, _) => value.Text = format(bar.Value); value.TextAlign = ContentAlignment.MiddleRight;
+        row.Controls.Add(bar, 0, 0); row.Controls.Add(value, 1, 0); return row;
     }
 
     private TabPage BuildGraphicsTab()
@@ -232,7 +242,8 @@ internal sealed class LauncherForm : Form
         var size = int.TryParse(ini.Get("Graphics", "VoxelSize", "4"), out var parsedSize) ? parsedSize : 4;
         voxelSize.SelectedIndex = size switch { 2 => 0, 3 => 1, 6 => 3, 8 => 4, _ => 2 };
         voxelHeight.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelHeight", "55"), out var h) ? h : 55, 5, 100);
-        voxelHudHeight.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelHudHeight", "48"), out var hud) ? hud : 48, 0, 96);
+        voxelPitch.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelPitch", "39"), out var p) ? p : 39, 10, 80);
+        voxelZoom.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelZoom", "100"), out var z) ? z : 100, 50, 200);
         fullscreen.SelectedIndex = Math.Clamp(int.TryParse(ini.Get("Graphics", "Fullscreen", "0"), out var f) ? f : 0, 0, 2);
         windowScale.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "WindowScale", "2"), out var s) ? s : 2, 1, 8);
         enableAudio.Checked = ReadBool(ini.Get("Sound", "EnableAudio", "true"));
@@ -274,7 +285,7 @@ internal sealed class LauncherForm : Form
         ini.Set("Graphics", "IgnoreAspectRatio", Bool(ignoreAspectRatio.Checked)); ini.Set("Graphics", "Fullscreen", fullscreen.SelectedIndex.ToString());
         ini.Set("Graphics", "WindowScale", windowScale.Value.ToString()); ini.Set("Graphics", "LinearFiltering", Bool(filtering.Checked)); ini.Set("Graphics", "NoSpriteLimits", Bool(noSpriteLimits.Checked));
         ini.Set("Graphics", "VoxelMode", Bool(voxel.Checked)); ini.Set("Graphics", "VoxelizeHud", Bool(!flatHud.Checked)); ini.Set("Graphics", "VoxelSize", sizes[Math.Max(0, voxelSize.SelectedIndex)].ToString());
-        ini.Set("Graphics", "VoxelHeight", voxelHeight.Value.ToString()); ini.Set("Graphics", "VoxelHudHeight", voxelHudHeight.Value.ToString()); ini.Set("Graphics", "Shader", shader.Text.Trim()); ini.Set("Graphics", "LinkGraphics", linkGraphics.Text.Trim());
+        ini.Set("Graphics", "VoxelHeight", voxelHeight.Value.ToString()); ini.Set("Graphics", "VoxelPitch", voxelPitch.Value.ToString()); ini.Set("Graphics", "VoxelZoom", voxelZoom.Value.ToString()); ini.Set("Graphics", "Shader", shader.Text.Trim()); ini.Set("Graphics", "LinkGraphics", linkGraphics.Text.Trim());
         ini.Set("Graphics", "DimFlashes", Bool(dimFlashes.Checked)); ini.Set("General", "Autosave", Bool(autosave.Checked)); ini.Set("General", "DisplayPerfInTitle", Bool(displayPerf.Checked)); ini.Set("General", "DisableFrameDelay", Bool(disableFrameDelay.Checked));
         ini.Set("General", "ExtendedAspectRatio", new[] { "4:3", "16:9", "16:10", "18:9", "extend_y, 16:9" }[Math.Max(0, aspectRatio.SelectedIndex)]);
         ini.Set("General", "Language", new[] { "English", "Japanese", "French", "German", "Spanish", "Italian" }[Math.Max(0, language.SelectedIndex)]);

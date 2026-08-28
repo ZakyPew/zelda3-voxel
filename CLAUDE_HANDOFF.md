@@ -18,41 +18,71 @@ The launcher is already in good shape. Current work is focused on the renderer.
 
 ## What is implemented
 
-### Voxel framebuffer renderer
+### PPU layer tagging (the layer split)
 
-`src\opengl.c` converts the completed SNES framebuffer into sampled,
-depth-tested voxel columns. Relevant settings:
+The PPU compositor stores each pixel's winning layer in the frame's otherwise
+unused alpha byte. See `kPpuPixelTag_*` in `snes\ppu.h`: 0 = blank/border,
+else `0x10 | layer` where layer is 0/1/3 = BG tiles, 2 = BG3 (all of Zelda's
+HUD/dialog/menu UI), 4/6 = OAM sprites, 5 = backdrop. All three render paths
+tag (new renderer in `PpuDrawWholeLine`, 4x4 mode7 upsample, old per-pixel
+renderer), so one rendered frame carries the full split — no second PPU pass,
+no HDMA snapshot/replay. Tagging does not affect the normal 2D output; the
+blit shaders ignore alpha.
+
+Zelda's UI all lands on BG3: the HUD buffer and the text/menu buffer are both
+DMA'd to the BG3 tilemap at VRAM `0x7c00` (see `src\nmi.c`).
+
+### Voxel renderer (tag-aware)
+
+`src\opengl.c` splits the tagged frame into three planes:
+
+- **Terrain**: heights come from the game's tile attribute maps via
+  `VoxelAttrHeight()`/`VoxelTileAttrAt()` in `src\opengl.c` — dungeon reads
+  `dung_bg2_attr_table` directly, overworld calls
+  `Overworld_GetTileAttributeAtLocation()` (both read-only; do NOT call
+  `GetTileAttribute()`, it writes `sprite_tiletype`). Luminance only adds
+  small in-class relief. The sampling grid is anchored to world coordinates
+  via `BG2HOFS_copy2`/`BG2VOFS_copy2`, so cells stay glued to map tiles while
+  scrolling (no resample shimmer); edge cells are clipped to the frame. Cube
+  top faces carry uv coords into the frame texture, so ground detail is
+  native-resolution regardless of `VoxelSize`. Ground hidden behind
+  actors/UI is filled from row neighbors.
+- **Actors**: OAM entries are decoded from `g_zenv.ppu->oam` (mirroring
+  `ppu_evaluateSprites`: y=0xf0 hidden, 9-bit x via the high table, sizes
+  8/16 since Zelda's OBSEL is fixed), clustered by rect adjacency
+  (union-find, 2px slack), and each cluster becomes one upright quad
+  textured from the frame; the shader discards non-sprite pixels, producing
+  pixel-perfect cutout billboards, one per logical actor at its own depth,
+  each with a translucent contact shadow. The quad is nudged forward to
+  avoid z-fighting with terrain faces.
+- **UI overlay**: a full-viewport pass draws only BG3-tagged pixels flat over
+  the scene (`g_hud_program` fragment shader filters by tag). No cutoff band,
+  no color keys, no split viewport — those were all removed.
+
+Vertex format is 9 floats (pos, color, uv + texture mode); see
+`kVoxelTex_*` in `src\opengl.c`. The voxel pass binds the same frame texture
+the 2D blit uses — the alpha-byte tags ride along into the shaders.
+
+Settings:
 
 ```ini
 [Graphics]
 OutputMethod=OpenGL
 VoxelMode=true
-VoxelizeHud=false
+VoxelizeHud=false   ; true = treat BG3 as terrain instead of overlay
 VoxelSize=4
 VoxelHeight=55
-VoxelHudHeight=48
+VoxelHudHeight=48   ; deprecated, parsed but ignored
+VoxelPitch=39       ; chase-camera tilt in degrees (10-80)
+VoxelZoom=100       ; camera zoom percent (50-200)
 ```
 
 - Press `3` in-game to toggle voxel presentation.
-- `VoxelSize` controls framebuffer sampling size.
-- `VoxelHeight` controls column extrusion.
-- A low dark floor grounds the generated geometry.
-
-### Split HUD/world viewports
-
-The earlier implementation tried to solve HUD overlap by changing a pixel
-cutoff and color-keying the HUD. That did not work reliably. The apparent
-"duplicate scene" above the voxel room was partly 3D geometry projecting upward
-into the HUD's screen area, not only a bad flat overlay.
-
-The current solution gives the HUD and world physically separate OpenGL
-viewports:
-
-- The 3D world viewport ends at the bottom of the HUD.
-- The HUD is redrawn flat in the full viewport with a top-band scissor.
-- Perspective geometry therefore cannot render behind the HUD at any angle.
-
-The split happens in `OpenGLRenderer_EndDraw()`.
+- Pitch and zoom are shader uniforms (`uPitch`, `uZoom`) read from config at
+  draw time, so an ini edit takes effect on restart; the launcher's Diorama
+  tab exposes both as sliders (it replaced the deprecated HUD-height field).
+- Each actor run also gets a translucent contact shadow (`kVoxelTex_Shadow`);
+  the voxel pass renders with alpha blending enabled for this.
 
 ### Gen1-style chase perspective
 
@@ -73,18 +103,23 @@ canvases and projects only the world canvas.
 
 ### Gameplay gating
 
-Voxel mode currently runs only in active gameplay modules:
+Voxel mode runs in active gameplay modules:
 
 - `7`: Dungeon
 - `9` and `11`: Overworld routes
 - `17`: Dungeon falling entrance
+- `14`: Interface, but only submodules 1 (item menu), 2 (dialogue text) and
+  4/8/9 (potion refills), and only when `saved_module_for_menu` is 7/9/11.
+  These draw BG3 UI over the live scene, so the 3D world stays visible
+  beneath the item menu and dialog boxes. Map screens (submodules 3/7),
+  desert prayer, flute menu, and save menu fall back to 2D.
 
-Title, file select, naming, interface/dialog, game-over, attract, and ending
-screens stay in the original 2D renderer. This prevents menus from being
-misinterpreted as terrain.
+Title, file select, naming, game-over, attract, and ending screens stay in
+the original 2D renderer.
 
-The gating condition is in `src\opengl.c` and reads `main_module_index` from
-`src\variables.h`.
+The gating condition is in `src\opengl.c` (`OpenGLRenderer_EndDraw`) and
+reads `main_module_index`, `submodule_index`, and `saved_module_for_menu`
+from `src\variables.h`.
 
 ## Launcher
 
@@ -118,52 +153,46 @@ Run the game with `build\Release` as its working directory so it can find
 
 ## Verification completed
 
-- Native Release build succeeds.
-- Launcher Release publish succeeds.
-- Rebuilt game launches and responds.
-- Title/file-select presentation was visually confirmed to remain flat 2D.
-- Forward-facing chase projection was visually confirmed.
-- Split viewport prevents the chase geometry from entering the HUD viewport.
+- Native Release build succeeds with no new warnings.
+- Visually confirmed in-game (Eastern Palace entrance, Chapter 2 ref save):
+  - Terrain renders as a full-frame diorama; walls/paths/cliffs separate by
+    height, HUD band no longer clips the world.
+  - Link and enemy sprites render as upright billboard stacks standing on
+    filled ground.
+  - HUD glyphs (magic bar, item box, counters, hearts) composite flat and
+    clean with no backdrop band and no duplicated scene.
+  - Item menu (module 14 submodule 1) draws flat with the 3D world visible
+    between its panels.
+  - `3` toggle works both directions; flat 2D output is pixel-identical in
+    look (tags ride in the ignored alpha channel).
+  - Attract/story/world-map screens remain flat 2D.
+
+## Alpha packaging
+
+`build\dist\Zelda3-Voxel-Alpha-0.2.zip` = zelda3.exe + SDL2.dll + the
+single-file launcher + default zelda3.ini + README (from
+`launcher\ALPHA_README.md`). It deliberately excludes `zelda3_assets.dat`
+(ROM-derived — never distribute it). Rebuild by copying fresh binaries from
+`build\Release` into `build\dist\Zelda3-Voxel-Alpha-<ver>` and re-zipping.
 
 ## Known limitations
 
-1. The voxelizer still samples the final framebuffer. It does not know which
-   pixels are terrain, Link, sprites, particles, or UI.
-2. Link and NPCs become voxel columns instead of upright billboards/models.
-3. Dialog/interface module `14` currently falls back to the complete flat 2D
-   frame. The 3D world does not remain visible beneath dialog boxes yet.
-4. Perspective values are currently hard-coded in the vertex shader.
-5. Full tile-aware terrain heights and sprite separation are not implemented.
+1. Multi-level dungeon rooms use the lower floor's attribute half
+   (`dung_bg2_attr_table` +0x1000 for upper floors is not selected yet).
+2. Overlapping distinct actors merge into one cluster while they touch
+   (visually benign; they separate again when apart).
+3. The game's own OAM shadow sprites (under flying enemies) billboard upright
+   like any sprite — small dark discs standing on the ground.
+4. Weather/translucency overlays (rain, fog) tag as their source BG layer and
+   melt into terrain colors.
+5. Sloped wall corners (attrs 0x10-0x1B) render as full-height blocks, not
+   diagonal geometry.
 
 ## Recommended next implementation
 
-Implement a real PPU/world/UI layer split instead of deriving everything from
-one completed framebuffer.
-
-Useful boundaries:
-
-- `src\main.c` — `DrawPpuFrameWithPerf()` allocates the render buffer and calls
-  `ZeldaDrawPpuFrame()`.
-- `src\zelda_rtl.c` — `ZeldaDrawPpuFrame()` drives the PPU one scanline at a
-  time.
-- `snes\ppu.h` — `Ppu.screenEnabled[2]` contains main/sub-screen layer masks.
-- HUD is primarily on BG3; world is primarily BG1/BG2 plus OAM sprites.
-
-Suggested staged approach:
-
-1. Render a normal full frame for UI/reference.
-2. Render a second world-only frame with BG3 disabled while preserving PPU
-   state and HDMA behavior.
-3. Feed only the world frame into the 3D voxel pass.
-4. Composite HUD/dialog/menu layers from the normal frame afterward.
-5. Separate OAM sprites from the ground pass and render them as upright
-   billboards or dedicated voxel actors.
-6. Add launcher settings for camera pitch, zoom, and chase-camera enablement.
-
-Be careful when rendering the PPU twice: HDMA state and scanline writes are
-stateful. Snapshot/restore the required PPU and DMA state or add explicit layer
-masking support to the PPU renderer rather than replaying a destructive second
-frame blindly.
+1. Floor-aware attribute lookup for multi-level dungeon rooms.
+2. Separate effect layer for weather overlays.
+3. Diagonal top faces for sloped wall corner tiles.
 
 ## Related documentation
 

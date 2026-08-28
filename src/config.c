@@ -377,7 +377,14 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       g_config.voxel_height = (uint8)IntMax(5, IntMin(100, atoi(value)));
       return true;
     } else if (StringEqualsNoCase(key, "VoxelHudHeight")) {
+      // Deprecated: UI separation is per-pixel now; parsed for ini compat.
       g_config.voxel_hud_height = (uint8)IntMax(0, IntMin(96, atoi(value)));
+      return true;
+    } else if (StringEqualsNoCase(key, "VoxelPitch")) {
+      g_config.voxel_pitch = (uint8)IntMax(10, IntMin(80, atoi(value)));
+      return true;
+    } else if (StringEqualsNoCase(key, "VoxelZoom")) {
+      g_config.voxel_zoom = (uint8)IntMax(50, IntMin(200, atoi(value)));
       return true;
     } else if (StringEqualsNoCase(key, "LinkGraphics")) {
       g_config.link_graphics = value;
@@ -534,6 +541,8 @@ void ParseConfigFile(const char *filename) {
   g_config.voxel_size = 4;
   g_config.voxel_height = 55;
   g_config.voxel_hud_height = 48;
+  g_config.voxel_pitch = 39;   // degrees of chase-camera tilt
+  g_config.voxel_zoom = 100;   // percent
 
   if (filename != NULL || !ParseOneConfigFile("zelda3.user.ini", 0)) {
     if (filename == NULL)

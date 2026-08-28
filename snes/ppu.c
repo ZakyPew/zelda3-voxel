@@ -746,7 +746,8 @@ static void PpuDrawMode7Upsampled(Ppu *ppu, uint y) {
     tile = ppu->vram[(ycur >> 25 & 0x7f) * 128 + (xcur >> 25 & 0x7f)] & 0xff;  \
     pixel = ppu->vram[tile * 64 + (ycur >> 22 & 7) * 8 + (xcur >> 22 & 7)] >> 8; \
     pixel = (xcur & 0x80000000) ? 0 : pixel; \
-    *(uint32*)dst = (mode ? (ppu->colorMapRgb[pixel] & 0xfefefe) >> 1 : ppu->colorMapRgb[pixel]); \
+    *(uint32*)dst = (uint32)kPpuPixelTag_Valid << 24 | \
+        (mode ? (ppu->colorMapRgb[pixel] & 0xfefefe) >> 1 : ppu->colorMapRgb[pixel]); \
     xcur += m0, ycur += m2, dst += 4;
 
     if (!ppu->halfColor) {
@@ -775,7 +776,8 @@ static void PpuDrawMode7Upsampled(Ppu *ppu, uint y) {
     for (size_t i = 0; i < draw_width; i++, dst += 16) {
       uint32 pixel = pixels[i] & 0xff;
       if (pixel) {
-        uint32 color = ppu->colorMapRgb[pixel];
+        uint32 color = (uint32)(kPpuPixelTag_Valid | kPpuPixelTag_Sprite) << 24 |
+                       ppu->colorMapRgb[pixel];
         ((uint32 *)dst)[3] = ((uint32 *)dst)[2] = ((uint32 *)dst)[1] = ((uint32 *)dst)[0] = color;
         ((uint32 *)(dst + pitch * 1))[3] = ((uint32 *)(dst + pitch * 1))[2] = ((uint32 *)(dst + pitch * 1))[1] = ((uint32 *)(dst + pitch * 1))[0] = color;
         ((uint32 *)(dst + pitch * 2))[3] = ((uint32 *)(dst + pitch * 2))[2] = ((uint32 *)(dst + pitch * 2))[1] = ((uint32 *)(dst + pitch * 2))[0] = color;
@@ -896,8 +898,10 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
       // Math is disabled (or has no effect), so can avoid the per-pixel maths check
       uint32 i = left;
       do {
-        uint32 color = ppu->cgram[ppu->bgBuffers[0].data[i] & 0xff];
-        dst[0] = ppu->brightnessMult[color & clip_color_mask] << 16 |
+        uint32 zb = ppu->bgBuffers[0].data[i];
+        uint32 color = ppu->cgram[zb & 0xff];
+        dst[0] = (kPpuPixelTag_Valid | (zb >> 8 & 0xf)) << 24 |
+                 ppu->brightnessMult[color & clip_color_mask] << 16 |
                  ppu->brightnessMult[(color >> 5) & clip_color_mask] << 8 |
                  ppu->brightnessMult[(color >> 10) & clip_color_mask];
       } while (dst++, ++i < right);
@@ -934,7 +938,8 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
             b += b2;
           }
         }
-        dst[0] = color_map[b] | color_map[g] << 8 | color_map[r] << 16;
+        dst[0] = (uint32)(kPpuPixelTag_Valid | main_layer) << 24 |
+                 color_map[b] | color_map[g] << 8 | color_map[r] << 16;
       } while (dst++, ++i < right);
     }
   } while (cw_clip_math >>= 1, ++windex < cwin.nr);
@@ -951,8 +956,9 @@ static void ppu_handlePixel(Ppu* ppu, int x, int y) {
   int r = 0, r2 = 0;
   int g = 0, g2 = 0;
   int b = 0, b2 = 0;
+  int mainLayer = 5;
   if (!ppu->forcedBlank) {
-    int mainLayer = ppu_getPixel(ppu, x, y, false, &r, &g, &b);
+    mainLayer = ppu_getPixel(ppu, x, y, false, &r, &g, &b);
 
     bool colorWindowState = ppu_getWindowState(ppu, 5, x);
     if (
@@ -1004,7 +1010,7 @@ static void ppu_handlePixel(Ppu* ppu, int x, int y) {
   pixelBuffer[0] = ((b << 3) | (b >> 2)) * ppu->brightness / 15;
   pixelBuffer[1] = ((g << 3) | (g >> 2)) * ppu->brightness / 15;
   pixelBuffer[2] = ((r << 3) | (r >> 2)) * ppu->brightness / 15;
-  pixelBuffer[3] = 0;
+  pixelBuffer[3] = ppu->forcedBlank ? 0 : kPpuPixelTag_Valid | mainLayer;
 }
 
 static const int bitDepthsPerMode[10][4] = {
