@@ -35,9 +35,27 @@ static uint32 g_world_key;                  // scene identity for rebuilds
 static uint32 g_world_frame;                // frame counter for refreshes
 static bool g_world_valid;
 
+// Fog/canopy overlays: the subscreen overlay tilemap rasterized into a
+// wrapping 512x512 texture, drawn as a translucent floating plane.
+static uint32 *g_overlay_pixels;
+static unsigned int g_overlay_texture;
+static uint8 g_overlay_last = 0xff;
+static bool g_overlay_ready;
+
 // Chase camera: yaw follows Link's facing, pivot follows his position.
 static float g_chase_yaw, g_chase_px, g_chase_pz;
 static bool g_chase_snap = true;
+
+// Uniform locations, resolved once after link.
+static struct {
+  int aspect, pitch, zoom, yaw, pivot, dist, flash, hud_world;
+  int tex1, world_tex, overlay_tex;
+} g_vloc;
+static struct { int scrim, band; } g_hloc;
+
+static bool VoxelOverlayCanopy(uint8 ov);
+static bool VoxelOverlayFog(uint8 ov);
+static void VoxelOverlayRaster(void);
 
 // With a rotated follow camera, the d-pad must be screen-relative or the
 // controls fight the view: rotate Up/Down/Left/Right by the camera's
@@ -74,6 +92,7 @@ enum {
   kVoxelTex_Shadow = 3,   // translucent black contact shadow
   kVoxelTex_World = 4,    // world-atlas pixels (off-screen terrain), tinted by color
   kVoxelTex_Rain = 5,     // translucent falling rain streak
+  kVoxelTex_Overlay = 6,  // floating fog/canopy plane from the subscreen overlay
 };
 
 typedef struct VoxelVertex {
@@ -486,6 +505,16 @@ static bool VoxelWorldAtlas_Refresh(void) {
                        submodule_index != 0;
   if (transitioning)
     return g_world_valid;
+  // Keep the floating fog/canopy texture fresh while such an overlay is up.
+  uint8 ov = overlay_index & 0xff;
+  if (!player_is_indoors && (VoxelOverlayCanopy(ov) || VoxelOverlayFog(ov))) {
+    if (ov != g_overlay_last || (g_world_frame & 15) == 0) {
+      VoxelOverlayRaster();
+      g_overlay_last = ov;
+    }
+  } else {
+    g_overlay_last = 0xff;
+  }
   uint32 key;
   if (player_is_indoors) {
     key = 0x80000000u | dungeon_room_index;
@@ -541,6 +570,56 @@ static bool VoxelWorldCell(int wx, int wy, int w, int h,
     *r = sr / n, *g = sg / n, *b = sb / n;
   }
   return true;
+}
+
+// Which overlays get a floating plane: canopy height for tree tops, the
+// grove mist and the stone bridge deck; ground height for the Death
+// Mountain fog and Dark World clouds. Rain (0x9F) has its own streaks.
+static bool VoxelOverlayCanopy(uint8 ov) {
+  return ov == 0x9d || ov == 0x9e || ov == 0x97 || ov == 0x94;
+}
+
+static bool VoxelOverlayFog(uint8 ov) {
+  return ov == 0x95 || ov == 0x9c;
+}
+
+// Rasterize the subscreen overlay (the 64x64 BG1 tilemap in VRAM) into a
+// wrapping 512x512 RGBA texture; transparent pixels keep alpha 0.
+static void VoxelOverlayRaster(void) {
+  Ppu *ppu = g_zenv.ppu;
+  if (!g_overlay_pixels) {
+    g_overlay_pixels = malloc(512 * 512 * sizeof(uint32));
+    if (!g_overlay_pixels)
+      return;
+  }
+  memset(g_overlay_pixels, 0, 512 * 512 * sizeof(uint32));
+  int map_base = ppu->bgLayer[0].tilemapAdr;
+  int tile_base = ppu->bgLayer[0].tileAdr;
+  for (int ty = 0; ty < 64; ty++) {
+    for (int tx = 0; tx < 64; tx++) {
+      int adr = map_base + ((ty & 0x1f) << 5) + (tx & 0x1f) +
+                (tx >= 32 ? 0x400 : 0) + (ty >= 32 ? 0x800 : 0);
+      VoxelRasterTile(g_overlay_pixels, 512, tx * 8, ty * 8,
+                      ppu->vram[adr & 0x7fff], tile_base, true);
+    }
+  }
+  glActiveTexture(GL_TEXTURE2);
+  glBindTexture(GL_TEXTURE_2D, g_overlay_texture);
+  GLenum fmt = g_opengl_es ? GL_RGBA : GL_BGRA;
+  GLenum type = g_opengl_es ? GL_UNSIGNED_BYTE : GL_UNSIGNED_INT_8_8_8_8_REV;
+  if (!g_overlay_ready) {
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512, 512, 0, fmt, type,
+                 g_overlay_pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  } else {
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 512, 512, fmt, type,
+                    g_overlay_pixels);
+  }
+  glActiveTexture(GL_TEXTURE0);
+  g_overlay_ready = true;
 }
 
 static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
@@ -1077,6 +1156,33 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
     }}}
   }
 
+  // Floating fog / canopy plane: the subscreen overlay art hovers above the
+  // scene (forest tree tops, grove mist, the bridge deck) or hugs the ground
+  // (Death Mountain fog, Dark World clouds), showing through terrain gaps.
+  {
+    uint8 ov = overlay_index & 0xff;
+    bool ov_canopy = VoxelOverlayCanopy(ov), ov_fog = VoxelOverlayFog(ov);
+    if (world_ok && !player_is_indoors && g_overlay_ready &&
+        (ov_canopy || ov_fog)) {
+      float oh = ov_canopy ? .34f : .10f;
+      float oa = ov_canopy ? .55f : .42f;
+      float opx0 = -1.0f + fx_start * pxw;
+      float opx1 = -1.0f + (fx_start + cols * step) * pxw;
+      float opz0 = -1.0f + fy_start * pxh;
+      float opz1 = -1.0f + (fy_start + rows * step) * pxh;
+      float ua = (wx0 + fx_start / rscale) * (1.0f / 512.0f);
+      float ub = (wx0 + (fx_start + cols * step) / rscale) * (1.0f / 512.0f);
+      float va = (wy0 + fy_start / rscale) * (1.0f / 512.0f);
+      float vb = (wy0 + (fy_start + rows * step) / rscale) * (1.0f / 512.0f);
+      VoxelPush(vertices, &count, opx0, oh, opz0, oa, oa, oa, ua, va, kVoxelTex_Overlay);
+      VoxelPush(vertices, &count, opx1, oh, opz0, oa, oa, oa, ub, va, kVoxelTex_Overlay);
+      VoxelPush(vertices, &count, opx1, oh, opz1, oa, oa, oa, ub, vb, kVoxelTex_Overlay);
+      VoxelPush(vertices, &count, opx0, oh, opz0, oa, oa, oa, ua, va, kVoxelTex_Overlay);
+      VoxelPush(vertices, &count, opx1, oh, opz1, oa, oa, oa, ub, vb, kVoxelTex_Overlay);
+      VoxelPush(vertices, &count, opx0, oh, opz1, oa, oa, oa, ua, vb, kVoxelTex_Overlay);
+    }
+  }
+
   glBindVertexArray(g_voxel_VAO);
   glBindBuffer(GL_ARRAY_BUFFER, g_voxel_VBO);
   glBufferData(GL_ARRAY_BUFFER, (size_t)count * sizeof(*vertices), vertices, GL_DYNAMIC_DRAW);
@@ -1086,32 +1192,30 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, g_world_texture);
+  glActiveTexture(GL_TEXTURE2);
+  glBindTexture(GL_TEXTURE_2D, g_overlay_texture);
   glActiveTexture(GL_TEXTURE0);
-  glUniform1i(glGetUniformLocation(g_voxel_program, "texture1"), 0);
-  glUniform1i(glGetUniformLocation(g_voxel_program, "uWorldTex"), 1);
-  glUniform1i(glGetUniformLocation(g_voxel_program, "uHudIsWorld"),
-              g_config.voxelize_hud);
-  glUniform1f(glGetUniformLocation(g_voxel_program, "uAspect"),
-              (float)viewport_width / (float)viewport_height);
+  glUniform1i(g_vloc.tex1, 0);
+  glUniform1i(g_vloc.world_tex, 1);
+  glUniform1i(g_vloc.overlay_tex, 2);
+  glUniform1i(g_vloc.hud_world, g_config.voxelize_hud);
+  glUniform1f(g_vloc.aspect, (float)viewport_width / (float)viewport_height);
   // Camera profiles: diorama keeps the slider pitch and a neutral pivot;
   // chase reframes as a third-person over-the-shoulder view (low pitch,
   // pivot pulled close so Link stands large at the lower third with the
   // world running to the horizon); first person drops to eye level with the
   // pivot at the camera.
-  glUniform1f(glGetUniformLocation(g_voxel_program, "uPitch"),
+  glUniform1f(g_vloc.pitch,
               first_person ? .20f :
               chase ? .40f : g_config.voxel_pitch * (3.14159265f / 180.0f));
-  glUniform1f(glGetUniformLocation(g_voxel_program, "uZoom"),
-              g_config.voxel_zoom * .01f);
-  glUniform1f(glGetUniformLocation(g_voxel_program, "uYaw"), yaw);
-  glUniform2f(glGetUniformLocation(g_voxel_program, "uPivot"), pivot_x, pivot_z);
-  glUniform1f(glGetUniformLocation(g_voxel_program, "uDist"),
-              first_person ? 2.35f : chase ? 1.35f : 0.0f);
+  glUniform1f(g_vloc.zoom, g_config.voxel_zoom * .01f);
+  glUniform1f(g_vloc.yaw, yaw);
+  glUniform2f(g_vloc.pivot, pivot_x, pivot_z);
+  glUniform1f(g_vloc.dist, first_person ? 2.35f : chase ? 1.35f : 0.0f);
   // Lightning: the rain overlay flips CGADSUB from half-add (0x72) to
   // full-add (0x32) on flash frames; brighten the whole diorama with it so
   // lightning illuminates the scene instead of just retinting the ground.
-  glUniform1f(glGetUniformLocation(g_voxel_program, "uFlash"),
-              CGADSUB_copy == 0x32 ? 1.35f : 1.0f);
+  glUniform1f(g_vloc.flash, CGADSUB_copy == 0x32 ? 1.35f : 1.0f);
   glViewport(viewport_x, viewport_y, viewport_width, viewport_height);
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_BLEND);
@@ -1180,8 +1284,8 @@ static void OpenGLRenderer_DrawUiOverlay(int viewport_x, int viewport_y,
       last = IntMin(last + pad + 1, g_draw_height);
       int sy = viewport_y + viewport_height - last * viewport_height / g_draw_height;
       int sh = (last - first) * viewport_height / g_draw_height;
-      glUniform1i(glGetUniformLocation(g_hud_program, "uScrim"), 1);
-      glUniform2f(glGetUniformLocation(g_hud_program, "uScrimBand"),
+      glUniform1i(g_hloc.scrim, 1);
+      glUniform2f(g_hloc.band,
                   (float)first / g_draw_height, (float)last / g_draw_height);
       glEnable(GL_BLEND);
       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1192,7 +1296,7 @@ static void OpenGLRenderer_DrawUiOverlay(int viewport_x, int viewport_y,
       glDisable(GL_BLEND);
     }
   }
-  glUniform1i(glGetUniformLocation(g_hud_program, "uScrim"), 0);
+  glUniform1i(g_hloc.scrim, 0);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
@@ -1241,6 +1345,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
 
   glGenTextures(1, &g_texture.gl_texture);
   glGenTextures(1, &g_world_texture);
+  glGenTextures(1, &g_overlay_texture);
 
   static const GLchar *voxel_vs_core = "#version 330 core\n" CODE(
     layout(location = 0) in vec3 aPos;
@@ -1306,9 +1411,16 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     out vec4 FragColor;
     uniform sampler2D texture1;
     uniform sampler2D uWorldTex;
+    uniform sampler2D uOverlayTex;
     uniform int uHudIsWorld;
     uniform float uFlash;
     void main() {
+      if (TexData.z > 5.5) {
+        vec4 t = texture(uOverlayTex, TexData.xy);
+        if (t.a < 0.05) discard;
+        FragColor = vec4(min(t.rgb * uFlash, vec3(1.0)), Color.r);
+        return;
+      }
       if (TexData.z > 4.5) {
         FragColor = vec4(min(Color * uFlash, vec3(1.0)), 0.40);
         return;
@@ -1343,9 +1455,16 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     out vec4 FragColor;
     uniform sampler2D texture1;
     uniform sampler2D uWorldTex;
+    uniform sampler2D uOverlayTex;
     uniform int uHudIsWorld;
     uniform float uFlash;
     void main() {
+      if (TexData.z > 5.5) {
+        vec4 t = texture(uOverlayTex, TexData.xy);
+        if (t.a < 0.05) discard;
+        FragColor = vec4(min(t.rgb * uFlash, vec3(1.0)), Color.r);
+        return;
+      }
       if (TexData.z > 4.5) {
         FragColor = vec4(min(Color * uFlash, vec3(1.0)), 0.40);
         return;
@@ -1385,6 +1504,17 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   glAttachShader(g_voxel_program, voxel_vshader);
   glAttachShader(g_voxel_program, voxel_fshader);
   glLinkProgram(g_voxel_program);
+  g_vloc.aspect = glGetUniformLocation(g_voxel_program, "uAspect");
+  g_vloc.pitch = glGetUniformLocation(g_voxel_program, "uPitch");
+  g_vloc.zoom = glGetUniformLocation(g_voxel_program, "uZoom");
+  g_vloc.yaw = glGetUniformLocation(g_voxel_program, "uYaw");
+  g_vloc.pivot = glGetUniformLocation(g_voxel_program, "uPivot");
+  g_vloc.dist = glGetUniformLocation(g_voxel_program, "uDist");
+  g_vloc.flash = glGetUniformLocation(g_voxel_program, "uFlash");
+  g_vloc.hud_world = glGetUniformLocation(g_voxel_program, "uHudIsWorld");
+  g_vloc.tex1 = glGetUniformLocation(g_voxel_program, "texture1");
+  g_vloc.world_tex = glGetUniformLocation(g_voxel_program, "uWorldTex");
+  g_vloc.overlay_tex = glGetUniformLocation(g_voxel_program, "uOverlayTex");
   glGenVertexArrays(1, &g_voxel_VAO);
   glGenBuffers(1, &g_voxel_VBO);
   glBindVertexArray(g_voxel_VAO);
@@ -1558,6 +1688,8 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   glAttachShader(g_hud_program, vs);
   glAttachShader(g_hud_program, hud_fs);
   glLinkProgram(g_hud_program);
+  g_hloc.scrim = glGetUniformLocation(g_hud_program, "uScrim");
+  g_hloc.band = glGetUniformLocation(g_hud_program, "uScrimBand");
   glGetProgramiv(g_hud_program, GL_LINK_STATUS, &success);
   if (!success) {
     glGetProgramInfoLog(g_hud_program, 512, NULL, infolog);

@@ -302,12 +302,24 @@ direction (48px behind, 96px lateral) so the vista runs deeper ahead.
   radius shrunk so nearby enemies stop vanishing; rain anchors to 256px
   world tiles (constant density, no scroll drift) with landing flecks.
 
+## Overlay planes (fog / canopy)
+
+`VoxelOverlayRaster` rasterizes the subscreen overlay's BG1 tilemap (VRAM,
+64x64 tiles, quadrant layout +0/0x400/0x800/0xC00) into a wrapping 512x512
+texture on unit 2 (`uOverlayTex`), refreshed on overlay change and every 16
+frames. A translucent world-uv plane (`kVoxelTex_Overlay`, uv = world_px/512
+with GL_REPEAT — BG1 scroll is slaved to BG2 for these overlays) draws in
+the translucent pass: canopy height .34 for 0x9D/0x9E tree tops, 0x97 grove
+mist and 0x94 bridge deck; drifting fog at .10 for 0x95/0x9C Death Mountain.
+Rain 0x9F keeps its streak system; verified on the Tower of Hera summit via
+the Chapter 4 ref save. Uniform locations are now cached at link time
+(`g_vloc`/`g_hloc`).
+
 ## Recommended next implementation
 
-1. Fog volumes for the Death Mountain / grove overlays (0x95/0x9C/0x97).
-2. In-game verification pass on a two-level room (castle sewers).
-3. Cache voxel-shader uniform locations (minor perf).
-4. Ease margin changes on chase yaw flips (band fade-in already hides most
+1. In-game verification pass on a two-level room (castle sewers) and the
+   Lost Woods canopy (0x9D) when the playthrough reaches them.
+2. Ease margin changes on chase yaw flips (band fade-in already hides most
    of the pop).
 
 ## Related documentation
