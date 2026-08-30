@@ -55,5 +55,23 @@ internal sealed class IniFile
         lines.Insert(sectionEnd, $"{key}={value}");
     }
 
+    public void Remove(string section, string key)
+    {
+        var current = string.Empty;
+        lines.RemoveAll(raw =>
+        {
+            var line = raw.Trim();
+            if (line.StartsWith('[') && line.EndsWith(']'))
+            {
+                current = line[1..^1];
+                return false;
+            }
+            var split = line.IndexOf('=');
+            return current.Equals(section, StringComparison.OrdinalIgnoreCase) &&
+                   split > 0 &&
+                   line[..split].Trim().Equals(key, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
     public void Save() => File.WriteAllLines(path, lines);
 }

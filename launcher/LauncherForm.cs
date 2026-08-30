@@ -285,7 +285,9 @@ internal sealed class LauncherForm : Form
         ini.Set("Graphics", "IgnoreAspectRatio", Bool(ignoreAspectRatio.Checked)); ini.Set("Graphics", "Fullscreen", fullscreen.SelectedIndex.ToString());
         ini.Set("Graphics", "WindowScale", windowScale.Value.ToString()); ini.Set("Graphics", "LinearFiltering", Bool(filtering.Checked)); ini.Set("Graphics", "NoSpriteLimits", Bool(noSpriteLimits.Checked));
         ini.Set("Graphics", "VoxelMode", Bool(voxel.Checked)); ini.Set("Graphics", "VoxelizeHud", Bool(!flatHud.Checked)); ini.Set("Graphics", "VoxelSize", sizes[Math.Max(0, voxelSize.SelectedIndex)].ToString());
-        ini.Set("Graphics", "VoxelHeight", voxelHeight.Value.ToString()); ini.Set("Graphics", "VoxelPitch", voxelPitch.Value.ToString()); ini.Set("Graphics", "VoxelZoom", voxelZoom.Value.ToString()); ini.Set("Graphics", "Shader", shader.Text.Trim()); ini.Set("Graphics", "LinkGraphics", linkGraphics.Text.Trim());
+        ini.Set("Graphics", "VoxelHeight", voxelHeight.Value.ToString()); ini.Set("Graphics", "VoxelPitch", voxelPitch.Value.ToString()); ini.Set("Graphics", "VoxelZoom", voxelZoom.Value.ToString());
+        if (string.IsNullOrWhiteSpace(shader.Text)) ini.Remove("Graphics", "Shader"); else ini.Set("Graphics", "Shader", shader.Text.Trim());
+        if (string.IsNullOrWhiteSpace(linkGraphics.Text)) ini.Remove("Graphics", "LinkGraphics"); else ini.Set("Graphics", "LinkGraphics", linkGraphics.Text.Trim());
         ini.Set("Graphics", "DimFlashes", Bool(dimFlashes.Checked)); ini.Set("General", "Autosave", Bool(autosave.Checked)); ini.Set("General", "DisplayPerfInTitle", Bool(displayPerf.Checked)); ini.Set("General", "DisableFrameDelay", Bool(disableFrameDelay.Checked));
         ini.Set("General", "ExtendedAspectRatio", new[] { "4:3", "16:9", "16:10", "18:9", "extend_y, 16:9" }[Math.Max(0, aspectRatio.SelectedIndex)]);
         ini.Set("General", "Language", new[] { "English", "Japanese", "French", "German", "Spanish", "Italian" }[Math.Max(0, language.SelectedIndex)]);
