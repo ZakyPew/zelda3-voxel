@@ -26,7 +26,7 @@ internal sealed class LauncherForm : Form
     private readonly NumericUpDown windowScale = new();
     private readonly ComboBox outputMethod = new();
     private readonly TextBox windowSize = new();
-    private readonly CheckBox enhancedMode7 = MakeCheck("Enhanced Mode 7", false);
+    private readonly CheckBox enhancedMode7 = MakeCheck("High-quality world map (Mode 7)", true);
     private readonly CheckBox newRenderer = MakeCheck("Use enhanced renderer", true);
     private readonly CheckBox ignoreAspectRatio = MakeCheck("Ignore aspect ratio", false);
     private readonly CheckBox noSpriteLimits = MakeCheck("Remove sprite limits", false);
@@ -156,6 +156,7 @@ internal sealed class LauncherForm : Form
         AddControl(tab, MakeFieldLabel("Window size (for example 1280x720 or Auto)")); windowSize.Width = 520; StyleText(windowSize); AddControl(tab, windowSize);
         AddControl(tab, MakeFieldLabel("Window mode")); fullscreen.Items.AddRange(["Windowed", "Borderless fullscreen", "Exclusive fullscreen"]); fullscreen.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(fullscreen); AddControl(tab, fullscreen);
         AddControl(tab, MakeFieldLabel("Window scale (1-8)")); windowScale.Minimum = 1; windowScale.Maximum = 8; windowScale.Width = 520; StyleNumeric(windowScale); AddControl(tab, windowScale);
+        AddControl(tab, MakeFieldLabel("Widescreen aspect ratio")); aspectRatio.Items.AddRange(["4:3", "16:9", "16:10", "18:9", "16:9 + extended vertical"]); aspectRatio.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(aspectRatio); AddControl(tab, aspectRatio);
         AddCheck(tab, newRenderer); AddCheck(tab, enhancedMode7); AddCheck(tab, ignoreAspectRatio); AddCheck(tab, filtering); AddCheck(tab, noSpriteLimits); AddCheck(tab, dimFlashes); AddCheck(tab, displayPerf); AddCheck(tab, disableFrameDelay);
         AddControl(tab, MakeFieldLabel("Shader file (optional)")); shader.Width = 520; StyleText(shader); AddControl(tab, shader);
         AddControl(tab, MakeFieldLabel("Link graphics file (optional)")); linkGraphics.Width = 520; StyleText(linkGraphics); AddControl(tab, linkGraphics);
@@ -178,7 +179,7 @@ internal sealed class LauncherForm : Form
     private TabPage BuildGameplayTab()
     {
         var tab = MakeSettingsTab("Gameplay");
-        AddCheck(tab, autosave); AddControl(tab, MakeFieldLabel("Aspect ratio")); aspectRatio.Items.AddRange(["4:3", "16:9", "16:10", "18:9", "16:9 + extended vertical"]); aspectRatio.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(aspectRatio); AddControl(tab, aspectRatio);
+        AddCheck(tab, autosave);
         AddControl(tab, MakeFieldLabel("Language")); language.Items.AddRange(["English", "Japanese", "French", "German", "Spanish", "Italian"]); language.DropDownStyle = ComboBoxStyle.DropDownList; StyleCombo(language); AddControl(tab, language);
         AddCheck(tab, itemSwitch); AddCheck(tab, itemSwitchLimit); AddCheck(tab, turnWhileDashing); AddCheck(tab, mirrorDarkworld); AddCheck(tab, collectSword); AddCheck(tab, breakPots); AddCheck(tab, disableLowHealth); AddCheck(tab, skipIntro); AddCheck(tab, showMaxItems); AddCheck(tab, moreBombs); AddCheck(tab, moreRupees); AddCheck(tab, miscBugFixes); AddCheck(tab, gameChangingBugFixes); AddCheck(tab, cancelBirdTravel);
         return tab;
@@ -228,7 +229,7 @@ internal sealed class LauncherForm : Form
         outputMethod.SelectedIndex = ini.Get("Graphics", "OutputMethod", "OpenGL").ToUpperInvariant() switch { "SDL" => 1, "SDL-SOFTWARE" => 2, "OPENGL ES" => 3, _ => 0 };
         windowSize.Text = ini.Get("Graphics", "WindowSize", "Auto");
         windowSize.Text = string.IsNullOrWhiteSpace(windowSize.Text) ? "Auto" : windowSize.Text;
-        enhancedMode7.Checked = ReadBool(ini.Get("Graphics", "EnhancedMode7", "false"));
+        enhancedMode7.Checked = ReadBool(ini.Get("Graphics", "EnhancedMode7", "true"));
         newRenderer.Checked = ReadBool(ini.Get("Graphics", "NewRenderer", "true"));
         ignoreAspectRatio.Checked = ReadBool(ini.Get("Graphics", "IgnoreAspectRatio", "false"));
         filtering.Checked = ReadBool(ini.Get("Graphics", "LinearFiltering", "false"));

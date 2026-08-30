@@ -165,6 +165,150 @@ static uint8 VoxelTileAttrAt(int wx, int wy, bool bg1_layer) {
   return Overworld_GetTileAttributeAtLocation((uint16)(wx >> 3), (uint16)wy);
 }
 
+// ---- Overworld terracing --------------------------------------------------
+// ALTTP implies elevation instead of storing it: ledge tiles (0x28-0x2F) are
+// one-story drops in their jump direction. Segment walkable ground into
+// regions bounded by walls/slopes/ledges, order the regions with the ledge
+// constraints, and lift each region by its solved story count - so mesas and
+// terraces rise as real plateaus instead of sinking behind their rim walls.
+
+static bool VoxelAttrIsLedge(uint8 a) {
+  return a >= 0x28 && a <= 0x2F;
+}
+
+static bool VoxelAttrIsStairs(uint8 a) {
+  return a == 0x1D || a == 0x1E || a == 0x1F || a == 0x22 || a == 0x26 ||
+         a == 0x3D || a == 0x3E || a == 0x3F;
+}
+
+static bool VoxelTerraceBoundary(uint8 a) {
+  return (a >= 0x01 && a <= 0x03) || VoxelAttrIsSlope(a) || VoxelAttrIsLedge(a) ||
+         VoxelAttrIsStairs(a) || a == 0x20 || (a >= 0x4C && a <= 0x4F);
+}
+
+// Downhill (jump) direction per ledge attr, from the game's ledge-hop code:
+// 0x28 N, 0x29 S, 0x2A W, 0x2B E, then NW, SW, NE, SE diagonals.
+static const int8 kVoxelLedgeDir[8][2] = {
+  {0, -1}, {0, 1}, {-1, 0}, {1, 0}, {-1, -1}, {-1, 1}, {1, -1}, {1, 1},
+};
+
+static void VoxelSolveTerraces(VoxelCell *cells, int cols, int rows,
+                               int wx0, int wy0, int fx_start, int fy_start,
+                               int step, int rscale, int snes_step, float lift) {
+  // Analyze a margin beyond the visible frame so a terrace keeps its level
+  // for a while after its ledges scroll off screen.
+  enum { M = 16, kMaxLevel = 6 };
+  const int acols = cols + M * 2, arows = rows + M * 2, total = acols * arows;
+  uint8 *attr = malloc(total);
+  int *region = malloc(total * sizeof(int));
+  int *queue = malloc(total * sizeof(int));
+  int *level = malloc(total * sizeof(int));
+  int *cup = malloc(total * sizeof(int));
+  int *cdn = malloc(total * sizeof(int));
+  if (!attr || !region || !queue || !level || !cup || !cdn)
+    goto cleanup;
+
+  for (int ar = 0; ar < arows; ar++) {
+    for (int ac = 0; ac < acols; ac++) {
+      int wx = wx0 + (fx_start + (ac - M) * step) / rscale + snes_step / 2;
+      int wy = wy0 + (fy_start + (ar - M) * step) / rscale + snes_step / 2;
+      attr[ar * acols + ac] = VoxelTileAttrAt(wx, wy, false);
+    }
+  }
+
+  // Flood-fill ground regions (4-connected, boundaries block).
+  int nregions = 0;
+  for (int i = 0; i < total; i++)
+    region[i] = VoxelTerraceBoundary(attr[i]) ? -1 : -2;
+  for (int i = 0; i < total; i++) {
+    if (region[i] != -2)
+      continue;
+    int head = 0, tail = 0, id = nregions++;
+    queue[tail++] = i, region[i] = id;
+    while (head < tail) {
+      int p = queue[head++], pr = p / acols, pc = p % acols;
+      if (pc > 0 && region[p - 1] == -2) region[p - 1] = id, queue[tail++] = p - 1;
+      if (pc + 1 < acols && region[p + 1] == -2) region[p + 1] = id, queue[tail++] = p + 1;
+      if (pr > 0 && region[p - acols] == -2) region[p - acols] = id, queue[tail++] = p - acols;
+      if (pr + 1 < arows && region[p + acols] == -2) region[p + acols] = id, queue[tail++] = p + acols;
+    }
+  }
+  memset(level, 0, (size_t)nregions * sizeof(int));
+
+  // One constraint per ledge cell: the region on the uphill side sits at
+  // least one story above the region on the downhill side.
+  int ncons = 0;
+  for (int i = 0; i < total; i++) {
+    if (!VoxelAttrIsLedge(attr[i]))
+      continue;
+    int dx = kVoxelLedgeDir[attr[i] - 0x28][0], dy = kVoxelLedgeDir[attr[i] - 0x28][1];
+    int ar = i / acols, ac = i % acols;
+    int ru = -1, rd = -1;
+    for (int s = 1; s <= 3 && ru < 0; s++) {
+      int nr = ar - dy * s, nc = ac - dx * s;
+      if (nr < 0 || nr >= arows || nc < 0 || nc >= acols)
+        break;
+      ru = region[nr * acols + nc];
+    }
+    for (int s = 1; s <= 3 && rd < 0; s++) {
+      int nr = ar + dy * s, nc = ac + dx * s;
+      if (nr < 0 || nr >= arows || nc < 0 || nc >= acols)
+        break;
+      rd = region[nr * acols + nc];
+    }
+    if (ru >= 0 && rd >= 0 && ru != rd)
+      cup[ncons] = ru, cdn[ncons] = rd, ncons++;
+  }
+  for (int it = 0; it < 10; it++) {
+    bool changed = false;
+    for (int k = 0; k < ncons; k++) {
+      int want = level[cdn[k]] + 1;
+      if (want > kMaxLevel)
+        want = kMaxLevel;
+      if (level[cup[k]] < want)
+        level[cup[k]] = want, changed = true;
+    }
+    if (!changed)
+      break;
+  }
+
+  // Lift the visible cells: ground by its region's level; boundary cells
+  // (cliff faces, ledges) by the tallest nearby region so they connect the
+  // stories; stairs midway so they read as ramps between the levels.
+  for (int row = 0; row < rows; row++) {
+    for (int col = 0; col < cols; col++) {
+      VoxelCell *c = &cells[row * cols + col];
+      if (c->height < 0.0f)
+        continue;
+      int ar = row + M, ac = col + M;
+      int r = region[ar * acols + ac];
+      int lv = 0;
+      if (r >= 0) {
+        lv = level[r];
+      } else {
+        int lvmax = 0, lvmin = kMaxLevel, found = 0;
+        for (int dr = -2; dr <= 2; dr++) {
+          for (int dc = -2; dc <= 2; dc++) {
+            int q = region[(ar + dr) * acols + (ac + dc)];
+            if (q >= 0) {
+              found = 1;
+              if (level[q] > lvmax) lvmax = level[q];
+              if (level[q] < lvmin) lvmin = level[q];
+            }
+          }
+        }
+        lv = !found ? 0 : VoxelAttrIsStairs(attr[ar * acols + ac])
+                          ? (lvmax + lvmin + 1) / 2 : lvmax;
+      }
+      if (lv > 0)
+        c->height += lv * lift;
+    }
+  }
+
+cleanup:
+  free(attr), free(region), free(queue), free(level), free(cup), free(cdn);
+}
+
 static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
                                int pitch, int viewport_x, int viewport_y,
                                int viewport_width, int viewport_height) {
@@ -289,6 +433,12 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       if (cells[i].height >= 0.0f && cells[i].upper)
         cells[i].height += height_scale * .12f;
   }
+
+  // Outdoors, solve terrace elevations from the ledge tiles so plateaus
+  // rise as real stories instead of sinking flat behind their rim walls.
+  if (use_attr && !player_is_indoors)
+    VoxelSolveTerraces(cells, cols, rows, wx0, wy0, fx_start, fy_start,
+                       step, rscale, snes_step, .02f + height_scale * .16f);
 
   // Ground hidden behind actors or UI inherits the nearest resolved cell in
   // its row, so actors stand on plausible terrain instead of holes.

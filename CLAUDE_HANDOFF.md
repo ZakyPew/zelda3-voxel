@@ -199,6 +199,18 @@ single-file launcher + default zelda3.ini + README (from
   Rain streaks intentionally ride the terrain-top texture for now.
 - The sampling grid anchors to `BG2HOFS_copy`/`BG2VOFS_copy` (NOT the
   `_copy2` variants — those exclude the quake-shake offset the PPU shows).
+- Ledges (0x28-0x2F) are one-story drops in a fixed jump direction:
+  0x28 N, 0x29 S, 0x2A W, 0x2B E, 0x2C NW, 0x2D SW, 0x2E NE, 0x2F SE
+  (from the ledge-hop code in src\player.c / src\tile_detect.c; the W/E and
+  NW/NE splits are placement convention — the code treats each pair alike).
+  0x4C-0x4F are Eastern-Ruins corner ledges (movement-dependent direction).
+  `VoxelSolveTerraces` in src\opengl.c turns these into an elevation model:
+  flood-fill ground regions bounded by walls/slopes/ledges/stairs over a
+  16-cell margin beyond the frame, constrain uphill-region >= downhill+1 per
+  ledge, relax (capped at 6 stories), then lift ground by its region level,
+  boundary cells by the tallest nearby region, stairs midway. This is why
+  overworld plateaus rise as real stories instead of sinking behind their
+  rim walls.
 
 ## Known limitations
 
