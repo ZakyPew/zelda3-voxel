@@ -39,6 +39,30 @@ static bool g_world_valid;
 static float g_chase_yaw, g_chase_px, g_chase_pz;
 static bool g_chase_snap = true;
 
+// With a rotated follow camera, the d-pad must be screen-relative or the
+// controls fight the view: rotate Up/Down/Left/Right by the camera's
+// quarter-turn so "up" is always the way the camera faces. Only active
+// during live gameplay modules (menus and dialogs keep the raw d-pad).
+uint32 VoxelRemapJoypadForCamera(uint32 input) {
+  bool gameplay = main_module_index == 7 || main_module_index == 9 ||
+                  main_module_index == 11 || main_module_index == 17;
+  if (!g_config.voxel_mode || g_config.voxel_camera == 0 || g_chase_snap ||
+      !gameplay || !(input & 0xf0))
+    return input;
+  int q = (int)lroundf(g_chase_yaw / 1.57079633f);
+  q = ((q % 4) + 4) % 4;
+  if (q == 0)
+    return input;
+  uint32 u = input >> 4 & 1, d = input >> 5 & 1, l = input >> 6 & 1, r = input >> 7 & 1;
+  uint32 n, s, w, e;
+  switch (q) {
+    case 1: w = u, e = d, s = l, n = r; break;   // camera faces west
+    case 2: s = u, n = d, e = l, w = r; break;   // camera faces south
+    default: e = u, w = d, n = l, s = r; break;  // camera faces east
+  }
+  return (input & ~0xf0u) | n << 4 | s << 5 | w << 6 | e << 7;
+}
+
 // Per-fragment texturing modes, carried in the third uv component. The frame
 // texture keeps its per-pixel layer tag in the alpha byte, so the fragment
 // shader can show the real pixel art on terrain tops and cut actors out of
@@ -672,6 +696,15 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // (the projection cannot represent it), and Link's own billboard hides.
   const float cull_sy = sinf(yaw), cull_cy = cosf(yaw);
 
+  // Follow cameras flatten the perspective, which makes low collision
+  // relief (fences, hedges, wall strips) nearly invisible - amplify
+  // everything above the ground plane so boundaries read clearly.
+  if (chase) {
+    for (int i = 0; i < cols * rows; i++)
+      if (cells[i].height > .085f)
+        cells[i].height = .085f + (cells[i].height - .085f) * 1.5f;
+  }
+
   // Ground hidden behind actors or UI inherits the nearest resolved cell in
   // its row, so actors stand on plausible terrain instead of holes.
   for (int row = 0; row < rows; row++) {
@@ -929,14 +962,14 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // world running to the horizon); first person drops to eye level with the
   // pivot at the camera.
   glUniform1f(glGetUniformLocation(g_voxel_program, "uPitch"),
-              first_person ? .12f :
-              chase ? .30f : g_config.voxel_pitch * (3.14159265f / 180.0f));
+              first_person ? .20f :
+              chase ? .40f : g_config.voxel_pitch * (3.14159265f / 180.0f));
   glUniform1f(glGetUniformLocation(g_voxel_program, "uZoom"),
               g_config.voxel_zoom * .01f);
   glUniform1f(glGetUniformLocation(g_voxel_program, "uYaw"), yaw);
   glUniform2f(glGetUniformLocation(g_voxel_program, "uPivot"), pivot_x, pivot_z);
   glUniform1f(glGetUniformLocation(g_voxel_program, "uDist"),
-              first_person ? 2.55f : chase ? 1.6f : 0.0f);
+              first_person ? 2.35f : chase ? 1.35f : 0.0f);
   // Lightning: the rain overlay flips CGADSUB from half-add (0x72) to
   // full-add (0x32) on flash frames; brighten the whole diorama with it so
   // lightning illuminates the scene instead of just retinting the ground.

@@ -275,6 +275,7 @@ static const struct RendererFuncs kSdlRendererFuncs  = {
 };
 
 void OpenGLRenderer_Create(struct RendererFuncs *funcs, bool use_opengl_es);
+uint32 VoxelRemapJoypadForCamera(uint32 input);
 
 #undef main
 int main(int argc, char** argv) {
@@ -456,6 +457,8 @@ int main(int argc, char** argv) {
     if (g_input1_state & 0xf0)
       g_gamepad_buttons = 0;
     inputs |= g_gamepad_buttons;
+    // Follow cameras rotate the view, so the d-pad rotates with them.
+    inputs = (int)VoxelRemapJoypadForCamera((uint32)inputs);
 
     SDL_LockMutex(g_audio_mutex);
     bool is_replay = ZeldaRunFrame(inputs);
