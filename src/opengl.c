@@ -98,14 +98,20 @@ static float VoxelAttrHeight(uint8 a, float lum, float hs) {
   if (a == 0x09)
     return .03f;                                          // shallow water
   if ((a >= 0x01 && a <= 0x03) || (a >= 0x10 && a < 0x1C))
-    return .05f + hs * (.40f + lum * .22f);               // walls, sloped corners
+    return .045f + hs * (.16f + lum * .08f);               // walls, furniture, sloped corners
   if (a >= 0x28 && a <= 0x2F)
     return .04f + hs * .16f;                              // ledges
   if ((a >= 0x50 && a <= 0x57) || (a >= 0x70 && a <= 0x7F) || a == 0x66 || a == 0x67)
-    return .04f + hs * (.22f + lum * .10f);               // bushes, rocks, pots, pegs
+    return .035f + hs * (.075f + lum * .035f);             // furniture, bushes, rocks, pots, pegs
   if (a == 0x0D)
     return .04f + hs * .10f;                              // spikes
   return .035f + lum * hs * .08f;                         // walkable ground
+}
+
+static bool VoxelAttrIsSolid(uint8 a) {
+  return (a >= 0x01 && a <= 0x03) || (a >= 0x10 && a < 0x1C) ||
+         (a >= 0x50 && a <= 0x57) || (a >= 0x70 && a <= 0x7F) ||
+         a == 0x66 || a == 0x67;
 }
 
 // Tile attribute at a world-pixel position, mirroring the game's own
@@ -185,6 +191,12 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
           uint8 attr = VoxelTileAttrAt(wx0 + (x0 + x1) / (2 * rscale),
                                        wy0 + (y0 + y1) / (2 * rscale));
           c->height = VoxelAttrHeight(attr, luminance, height_scale);
+          // Dungeon furniture often shares the collision class used by
+          // solid walls. Keep those interior tiles as shallow platforms;
+          // the room perimeter remains tall and provides the diorama rim.
+          if (player_is_indoors && VoxelAttrIsSolid(attr) &&
+              x0 > 24 && x1 < width - 24 && y0 > 24 && y1 < height - 24)
+            c->height = .022f + height_scale * (.018f + luminance * .008f);
         } else {
           c->height = .05f + luminance * height_scale;
         }
