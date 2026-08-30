@@ -179,13 +179,12 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
           }
         }
       }
-      // UI is painted flat after the voxel pass.  A cell that contains UI is
-      // deliberately left empty, even if it also includes world pixels; this
-      // avoids terrain geometry contaminating dialogue glyphs or borders.
-      if (un) {
-        c->r = c->g = c->b = 0.0f;
-        c->height = kCellVoid;
-      } else if (wn) {
+      // Cells that also contain UI pixels still build terrain from their
+      // world pixels: the terrain-top shader never shows UI-tagged pixels
+      // (it falls back to the cell color there), so dialogue glyphs and the
+      // HUD cannot contaminate the ground, and the world stays continuous
+      // beneath them instead of tearing holes.
+      if (wn) {
         c->r = (float)wr / (wn * 255.0f);
         c->g = (float)wg / (wn * 255.0f);
         c->b = (float)wb / (wn * 255.0f);
@@ -209,10 +208,10 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
         }
       } else {
         c->r = c->g = c->b = 0.0f;
-        // Actors need a reconstructed floor to stand on. UI is composited in
-        // a later flat pass, so it should cut a clean hole instead of pulling
-        // neighboring terrain into its letters and borders.
-        c->height = an ? kCellUnknown : kCellVoid;
+        // Fully covered by actors or UI: reconstruct the floor from row
+        // neighbors so actors have ground to stand on and dialog boxes sit
+        // over ground instead of a hole.
+        c->height = (an || un) ? kCellUnknown : kCellVoid;
       }
     }
   }
@@ -394,28 +393,6 @@ static void OpenGLRenderer_DrawUiOverlay(int viewport_x, int viewport_y,
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glViewport(viewport_x, viewport_y, viewport_width, viewport_height);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-}
-
-static void OpenGLRenderer_DrawDialoguePanel(int viewport_x, int viewport_y,
-                                             int viewport_width, int viewport_height) {
-  // The dialogue border is split between several PPU backgrounds, while the
-  // letters themselves are BG3.  Drawing BG3 alone leaves loose giant text
-  // over the diorama.  Restore the entire native lower message area as one
-  // flat panel, precisely aligned with the game's source frame.
-  const int source_top = 128;
-  int panel_height = viewport_height * (g_draw_height - source_top) / g_draw_height;
-  if (panel_height <= 0)
-    return;
-  glBindTexture(GL_TEXTURE_2D, g_texture.gl_texture);
-  glUseProgram(g_program);
-  glBindVertexArray(g_VAO);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glViewport(viewport_x, viewport_y, viewport_width, viewport_height);
-  glEnable(GL_SCISSOR_TEST);
-  glScissor(viewport_x, viewport_y, viewport_width, panel_height);
-  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-  glDisable(GL_SCISSOR_TEST);
 }
 
 static void GL_APIENTRY MessageCallback(GLenum source,
@@ -813,8 +790,6 @@ static void OpenGLRenderer_EndDraw() {
   if (g_config.voxel_mode && voxel_scene && g_glsl_shader == NULL) {
     VoxelRenderer_Draw(g_draw_width, g_draw_height, g_screen_buffer, g_draw_width * 4,
                        viewport_x, viewport_y, viewport_width, viewport_height);
-    if (!g_config.voxelize_hud && main_module_index == 14 && submodule_index == 2)
-      OpenGLRenderer_DrawDialoguePanel(viewport_x, viewport_y, viewport_width, viewport_height);
     if (!g_config.voxelize_hud)
       OpenGLRenderer_DrawUiOverlay(viewport_x, viewport_y, viewport_width, viewport_height);
     SDL_GL_SwapWindow(g_window);
