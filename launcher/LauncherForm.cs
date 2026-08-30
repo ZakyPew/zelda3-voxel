@@ -303,7 +303,30 @@ internal sealed class LauncherForm : Form
     {
         var game = Path.Combine(gameDirectory, "zelda3.exe"); var assets = Path.Combine(gameDirectory, "zelda3_assets.dat");
         if (!File.Exists(game) || !File.Exists(assets)) { MessageBox.Show("The launcher must sit beside zelda3.exe and zelda3_assets.dat.", "Game files missing", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-        SaveSettings(); Process.Start(new ProcessStartInfo(game) { WorkingDirectory = gameDirectory, UseShellExecute = true }); status.Text = "GAME RUNNING"; status.ForeColor = Mint;
+        try
+        {
+            SaveSettings();
+            var process = Process.Start(new ProcessStartInfo(game) { WorkingDirectory = gameDirectory, UseShellExecute = true });
+            if (process == null) throw new InvalidOperationException("Windows did not return a game process.");
+            status.Text = "GAME STARTING"; status.ForeColor = Gold;
+            Hide();
+            BeginInvoke(async () =>
+            {
+                await Task.Delay(750);
+                if (process.HasExited)
+                {
+                    Show(); WindowState = FormWindowState.Normal; Activate();
+                    status.Text = $"GAME EXITED  •  CODE {process.ExitCode}"; status.ForeColor = Color.FromArgb(244, 151, 123);
+                    MessageBox.Show($"Zelda3 Voxel closed during startup (exit code {process.ExitCode}). Check zelda3.ini and the local asset pack.", "Game startup failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Show(); WindowState = FormWindowState.Normal; Activate();
+            status.Text = "LAUNCH FAILED"; status.ForeColor = Color.FromArgb(244, 151, 123);
+            MessageBox.Show($"Unable to start Zelda3 Voxel:\n\n{ex.Message}", "Launch failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void RefreshStatus()
