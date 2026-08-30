@@ -73,6 +73,7 @@ enum {
   kVoxelTex_Actor = 2,    // frame pixels; discard non-sprite tags
   kVoxelTex_Shadow = 3,   // translucent black contact shadow
   kVoxelTex_World = 4,    // world-atlas pixels (off-screen terrain), tinted by color
+  kVoxelTex_Rain = 5,     // translucent falling rain streak
 };
 
 typedef struct VoxelVertex {
@@ -518,12 +519,56 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // Follow cameras need world in every direction (the view can face any way).
   const int cam = world_ok ? g_config.voxel_camera : 0;
   const bool chase = cam > 0, first_person = cam == 2;
-  const int ext_side = world_ok ? 96 : 0, ext_top = world_ok ? 96 : 0;
-  const int ext_bottom = world_ok ? (chase ? 96 : 48) : 0;
-  const int fx_start = -gx * rscale - ext_side * rscale;
-  const int fy_start = -gy * rscale - ext_top * rscale;
-  const int cols = (width + ext_side * rscale - fx_start + step - 1) / step;
-  const int rows = (height + ext_bottom * rscale - fy_start + step - 1) / step;
+
+  // Chase camera state: yaw eases toward Link's facing (N/S/W/E ->
+  // 0/pi/+-pi/2) and the view pivots on his smoothed position.
+  float yaw = 0.0f, pivot_x = 0.0f, pivot_z = 0.0f;
+  if (chase) {
+    static const float kFacingYaw[8] = {
+      0, 0, 3.14159265f, 0, 1.57079633f, 0, -1.57079633f, 0,
+    };
+    float target = kFacingYaw[link_direction_facing & 7];
+    float tx = -1.0f + ((int)(uint16)link_x_coord + 8 - wx0) * rscale * (2.0f / width);
+    float tz = -1.0f + ((int)(uint16)link_y_coord + 16 - wy0) * rscale * (2.0f / height);
+    if (g_chase_snap) {
+      g_chase_yaw = target, g_chase_px = tx, g_chase_pz = tz;
+      g_chase_snap = false;
+    } else {
+      float d = target - g_chase_yaw;
+      while (d > 3.14159265f) d -= 6.28318531f;
+      while (d < -3.14159265f) d += 6.28318531f;
+      g_chase_yaw += d * .12f;
+      while (g_chase_yaw > 3.14159265f) g_chase_yaw -= 6.28318531f;
+      while (g_chase_yaw < -3.14159265f) g_chase_yaw += 6.28318531f;
+      g_chase_px += (tx - g_chase_px) * .25f;
+      g_chase_pz += (tz - g_chase_pz) * .25f;
+    }
+    yaw = g_chase_yaw, pivot_x = g_chase_px, pivot_z = g_chase_pz;
+  } else {
+    g_chase_snap = true;
+  }
+  const float cull_sy = sinf(yaw), cull_cy = cosf(yaw);
+
+  // Grid margins beyond the frame: symmetric for the diorama, widened in
+  // the facing direction for follow cameras so the vista runs deeper.
+  int ml, mr, mt, mb;
+  if (!world_ok) {
+    ml = mr = mt = mb = 0;
+  } else if (!chase) {
+    ml = mr = 96, mt = 96, mb = 48;
+  } else {
+    int q = (int)lroundf(yaw / 1.57079633f);
+    q = ((q % 4) + 4) % 4;
+    ml = mr = mt = mb = 96;
+    if (q == 0) mt = 192, mb = 48;
+    else if (q == 2) mb = 192, mt = 48;
+    else if (q == 1) ml = 192, mr = 48;   // facing west
+    else mr = 192, ml = 48;               // facing east
+  }
+  const int fx_start = -gx * rscale - ml * rscale;
+  const int fy_start = -gy * rscale - mt * rscale;
+  const int cols = (width + mr * rscale - fx_start + step - 1) / step;
+  const int rows = (height + mb * rscale - fy_start + step - 1) / step;
 
   VoxelCell *cells = malloc((size_t)cols * rows * sizeof(*cells));
   VoxelVertex *vertices = malloc(((size_t)cols * rows * 2 + 1) * 24 * sizeof(*vertices));
@@ -664,37 +709,6 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   if (use_attr && !player_is_indoors)
     VoxelSolveTerraces(cells, cols, rows, wx0, wy0, fx_start, fy_start,
                        step, rscale, snes_step, .02f + height_scale * .16f);
-
-  // Chase camera: yaw eases toward Link's facing (N/S/W/E -> 0/pi/+-pi/2)
-  // and the view pivots on his smoothed position, Pokemon-recomp style.
-  float yaw = 0.0f, pivot_x = 0.0f, pivot_z = 0.0f;
-  if (chase) {
-    static const float kFacingYaw[8] = {
-      0, 0, 3.14159265f, 0, 1.57079633f, 0, -1.57079633f, 0,
-    };
-    float target = kFacingYaw[link_direction_facing & 7];
-    float tx = -1.0f + ((int)(uint16)link_x_coord + 8 - wx0) * rscale * (2.0f / width);
-    float tz = -1.0f + ((int)(uint16)link_y_coord + 16 - wy0) * rscale * (2.0f / height);
-    if (g_chase_snap) {
-      g_chase_yaw = target, g_chase_px = tx, g_chase_pz = tz;
-      g_chase_snap = false;
-    } else {
-      float d = target - g_chase_yaw;
-      while (d > 3.14159265f) d -= 6.28318531f;
-      while (d < -3.14159265f) d += 6.28318531f;
-      g_chase_yaw += d * .12f;
-      while (g_chase_yaw > 3.14159265f) g_chase_yaw -= 6.28318531f;
-      while (g_chase_yaw < -3.14159265f) g_chase_yaw += 6.28318531f;
-      g_chase_px += (tx - g_chase_px) * .25f;
-      g_chase_pz += (tz - g_chase_pz) * .25f;
-    }
-    yaw = g_chase_yaw, pivot_x = g_chase_px, pivot_z = g_chase_pz;
-  } else {
-    g_chase_snap = true;
-  }
-  // First person: anything behind the camera plane is culled CPU-side
-  // (the projection cannot represent it), and Link's own billboard hides.
-  const float cull_sy = sinf(yaw), cull_cy = cosf(yaw);
 
   // Follow cameras flatten the perspective, which makes low collision
   // relief (fences, hedges, wall strips) nearly invisible - amplify
@@ -940,6 +954,37 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   memcpy(vertices + count, shadow_verts, shadow_count * sizeof(*shadow_verts));
   count += shadow_count;
 
+  // 3D rain: the storm overlay (0x9F) exists only as subscreen color math,
+  // so recreate it as falling streaks in the scene. Depth testing lets
+  // terrain and walls occlude them, and they share the translucent
+  // depth-write-off pass with the shadows.
+  if (world_ok && !player_is_indoors && (overlay_index & 0xff) == 0x9f) {
+    float x0r = -1.0f + fx_start * pxw;
+    float x1r = -1.0f + (fx_start + cols * step) * pxw;
+    float z0r = -1.0f + fy_start * pxh;
+    float z1r = -1.0f + (fy_start + rows * step) * pxh;
+    float cyw = cosf(yaw), syw = sinf(yaw);
+    for (int i = 0; i < 260; i++) {
+      uint32 h1 = (uint32)(i + 1) * 2654435761u;
+      float rx = x0r + (float)(h1 & 0xffff) * (1.0f / 65535.0f) * (x1r - x0r);
+      float rz = z0r + (float)(h1 >> 16) * (1.0f / 65535.0f) * (z1r - z0r);
+      float phase = (float)((h1 >> 7) & 0x1ff) * (1.0f / 512.0f);
+      float fall = fmodf((float)g_world_frame * .045f + phase * 1.13f, 1.13f);
+      float ry = 1.0f - fall;
+      if (ry < 0.0f)
+        continue;
+      float len = .085f, w = .0045f, slant = .02f;
+      float ox = w * cyw, oz = -w * syw;             // camera-facing width axis
+      float sx2 = slant * cyw, sz2 = -slant * syw;   // wind slant, same axis
+      VoxelPush(vertices, &count, rx - ox, ry, rz - oz, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
+      VoxelPush(vertices, &count, rx + ox, ry, rz + oz, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
+      VoxelPush(vertices, &count, rx + ox + sx2, ry + len, rz + oz + sz2, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
+      VoxelPush(vertices, &count, rx - ox, ry, rz - oz, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
+      VoxelPush(vertices, &count, rx + ox + sx2, ry + len, rz + oz + sz2, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
+      VoxelPush(vertices, &count, rx - ox + sx2, ry + len, rz - oz + sz2, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
+    }
+  }
+
   glBindVertexArray(g_voxel_VAO);
   glBindBuffer(GL_ARRAY_BUFFER, g_voxel_VBO);
   glBufferData(GL_ARRAY_BUFFER, (size_t)count * sizeof(*vertices), vertices, GL_DYNAMIC_DRAW);
@@ -1172,6 +1217,10 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     uniform int uHudIsWorld;
     uniform float uFlash;
     void main() {
+      if (TexData.z > 4.5) {
+        FragColor = vec4(min(Color * uFlash, vec3(1.0)), 0.40);
+        return;
+      }
       if (TexData.z > 2.5 && TexData.z < 3.5) {
         float d = length(TexData.xy - vec2(0.5)) * 2.0;
         FragColor = vec4(0.0, 0.0, 0.0, 0.42 * smoothstep(1.0, 0.35, d));
@@ -1205,6 +1254,10 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     uniform int uHudIsWorld;
     uniform float uFlash;
     void main() {
+      if (TexData.z > 4.5) {
+        FragColor = vec4(min(Color * uFlash, vec3(1.0)), 0.40);
+        return;
+      }
       if (TexData.z > 2.5 && TexData.z < 3.5) {
         float d = length(TexData.xy - vec2(0.5)) * 2.0;
         FragColor = vec4(0.0, 0.0, 0.0, 0.42 * smoothstep(1.0, 0.35, d));

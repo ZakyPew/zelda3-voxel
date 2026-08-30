@@ -268,14 +268,25 @@ Actor billboards counter-rotate by the yaw CPU-side so they keep facing the
 camera; grid margins go symmetric (96px) in modes 1-2; the projection
 clamps view depth (`z = max(..., 0.1)`).
 
+## 3D rain
+
+When the storm overlay is active (`(overlay_index & 0xff) == 0x9f`,
+outdoors), 260 deterministic rain streaks (integer-hash positions, frame
+counter drives the fall; no rand()) are emitted over the whole grid as
+thin slanted camera-facing quads (`kVoxelTex_Rain`, alpha .40, brightened
+by the lightning `uFlash`). They render in the depth-write-off translucent
+pass with the shadows, so terrain and walls occlude them naturally. Fog
+overlays (0x95/0x9C/0x97) are still texture-only.
+
+The chase grid margin also widens to 192px in the camera's facing
+direction (48px behind, 96px lateral) so the vista runs deeper ahead.
+
 ## Recommended next implementation
 
-1. Chase polish: pull the far vista margin wider in the facing direction,
-   tune uDist/pitch per feedback, consider yaw-aware actor shadows.
-2. 3D weather: rain streak billboards / fog planes driven by the overlay
-   index and the SubMath tag, with pre-math ground colors.
-3. True diagonal top faces for slope cells.
-4. In-game verification pass on a two-level room (castle sewers).
+1. Fog volumes for the Death Mountain / grove overlays (0x95/0x9C/0x97).
+2. True diagonal top faces for slope cells.
+3. In-game verification pass on a two-level room (castle sewers).
+4. Splash flecks where rain streaks meet terrain tops.
 
 ## Related documentation
 
