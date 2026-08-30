@@ -996,6 +996,27 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
     const int vis_h = height / rscale;  // 224, or 240 in extend_y mode
     int rx0[128], ry0[128], rx1[128], ry1[128], group[128];
     int n = 0;
+    // Airborne entities: the game draws actors raised by their altitude
+    // (sprite_z / link_z_coord), so matching a cluster back to its entity
+    // recovers the true ground spot and the height to float the billboard.
+    int ent_x[17], ent_y[17], ent_z[17], ent_n = 0;
+    for (int k = 0; k < 16; k++) {
+      if (sprite_state[k] == 0)
+        continue;
+      int z = sprite_z[k] < 0xf0 ? sprite_z[k] : 0;
+      if (z == 0)
+        continue;  // grounded entities need no correction
+      ent_x[ent_n] = (sprite_x_hi[k] << 8 | sprite_x_lo[k]) + 8 - wx0;
+      ent_y[ent_n] = (sprite_y_hi[k] << 8 | sprite_y_lo[k]) + 8 - z - wy0;
+      ent_z[ent_n] = z, ent_n++;
+    }
+    int link_z = ((int16)link_z_coord >= 0 || (link_z_coord & 0xff) < 0xf0)
+                     ? (int)(link_z_coord & 0xff) : 0;
+    if (link_z != 0) {
+      ent_x[ent_n] = (int)(uint16)link_x_coord + 8 - wx0;
+      ent_y[ent_n] = (int)(uint16)link_y_coord + 16 - link_z - wy0;
+      ent_z[ent_n] = link_z, ent_n++;
+    }
     for (int i = 0; i < 128; i++) {
       int idx = i * 2;
       int yy = ppu->oam[idx] >> 8;
@@ -1062,20 +1083,37 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       }
       if (!any_visible)
         continue;
-      // Ground height under the cluster's feet, from the terrain grid.
+      // Airborne: the nearest raised entity within 24px claims this
+      // cluster; its altitude moves the ground anchor down-screen (the
+      // game draws airborne actors z pixels higher than their ground
+      // spot) and floats the billboard, while the shadow stays grounded.
+      int alt = 0;
+      {
+        int ccx = (fx0 + fx1) / (2 * rscale), ccy = fy1 / rscale;
+        int best = 24 * 24 + 1;
+        for (int k2 = 0; k2 < ent_n; k2++) {
+          int ddx = ent_x[k2] - ccx, ddy = ent_y[k2] + 8 - ccy;
+          int d2 = ddx * ddx + ddy * ddy;
+          if (d2 < best)
+            best = d2, alt = ent_z[k2];
+        }
+      }
+      int alt_px = alt * rscale;
+      // Ground height under the cluster's true feet, from the terrain grid.
       int gcol = ((fx0 + fx1) / 2 - fx_start) / step;
-      int grow = (fy1 - 1 - fy_start) / step;
+      int grow = (fy1 + alt_px - 1 - fy_start) / step;
       if (gcol < 0) gcol = 0;
       if (gcol >= cols) gcol = cols - 1;
       if (grow < 0) grow = 0;
       if (grow >= rows) grow = rows - 1;
       float cell_h = cells[grow * cols + gcol].height;
       float ground = cell_h >= 0.0f ? cell_h : 0.0f;
+      float base = ground + alt_px * pxw;
       float px0 = -1.0f + fx0 * pxw, px1 = -1.0f + fx1 * pxw;
       // Nudged forward so the quad never shares a plane with terrain faces;
       // the extra .37px keeps the offset non-commensurate with the cell grid
       // for every voxel size, so it can never land back on a face plane.
-      float pz = -1.0f + fy1 * pxh + (step * .2f + .37f) * pxh;
+      float pz = -1.0f + (fy1 + alt_px) * pxh + (step * .2f + .37f) * pxh;
       if (first_person) {
         float dxm = (px0 + px1) * .5f - pivot_x, dzm = pz - pivot_z;
         if (dxm * cull_sy + dzm * cull_cy > .35f ||
@@ -1105,12 +1143,12 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
         bx0 = cx - hw * cyw, bz0 = pz + hw * syw;
         bx1 = cx + hw * cyw, bz1 = pz - hw * syw;
       }
-      VoxelPush(vertices, &count, bx0, ground,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx1, ground,     bz1, 0,0,0, u1, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx1, ground + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx0, ground,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx1, ground + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx0, ground + h, bz0, 0,0,0, u0, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx0, base,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, base,     bz1, 0,0,0, u1, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, base + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx0, base,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, base + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx0, base + h, bz0, 0,0,0, u0, v0, kVoxelTex_Actor);
     }
   }
   // Shadows go last in the buffer; they draw with depth writes disabled.
