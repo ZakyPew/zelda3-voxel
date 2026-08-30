@@ -320,12 +320,34 @@ Rain 0x9F keeps its streak system; verified on the Tower of Hera summit via
 the Chapter 4 ref save. Uniform locations are now cached at link time
 (`g_vloc`/`g_hloc`).
 
+## Altitude-aware actors
+
+Each OAM billboard cluster now matches back to the game's own altitude
+state. Before the cluster loop, an entity table collects every raised
+entity in frame coordinates: sprite slots with `sprite_state[k]` alive and
+`sprite_z[k]` in 1..0xEF (0xF0+ is the falling-in-pit sentinel), at drawn
+position `(x_hi<<8|x_lo)+8-wx0`, `(y_hi<<8|y_lo)+8-z-wy0`; Link via
+`link_z_coord` with the game's own guard (`(int16)z >= 0 || (z & 0xff) <
+0xf0`), at `link_x_coord+8`, `link_y_coord+16-z`. A cluster claims the
+nearest entity within 24px of its bottom-center. For a claimed cluster,
+`alt_px = alt*rscale` moves the *ground anchor* down-screen (the game drew
+the actor at y-z, so ground = drawn foot + z): `grow` and `pz` use
+`fy1 + alt_px`, and the billboard base rises to `ground + alt_px*pxw` —
+the sprite floats at its true height while the contact shadow stays on
+the terrain below. Grounded actors take the unchanged `alt=0` path
+(verified pixel-identical across many scenes); the airborne arc is worth
+a quick visual check on any ledge hop.
+
 ## Recommended next implementation
 
-1. In-game verification pass on a two-level room (castle sewers) and the
-   Lost Woods canopy (0x9D) when the playthrough reaches them.
+1. In-game verification pass on a two-level room (castle sewers), the
+   Lost Woods canopy (0x9D), and a ledge hop / flying enemy for the
+   altitude float (automation kept getting blocked by NPCs; any hop in
+   normal play shows it).
 2. Ease margin changes on chase yaw flips (band fade-in already hides most
    of the pop).
+3. Publish a GitHub release from `build/dist/Zelda3-Voxel-Alpha-0.3.zip`
+   (no ROM assets inside — safe to publish) when the user asks.
 
 ## Related documentation
 
