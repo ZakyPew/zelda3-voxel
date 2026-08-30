@@ -223,14 +223,40 @@ single-file launcher + default zelda3.ini + README (from
    kPpuPixelTag_SubMath bit exists to support them).
 4. Slope chamfers are cell-resolution steps, not true diagonal geometry.
 
+## World atlas (map-RAM terrain)
+
+`src\opengl.c` rasterizes the loaded map from RAM into a world-space RGBA
+atlas (`VoxelWorldBuildOverworld`/`VoxelWorldBuildDungeon` +
+`VoxelRasterTile`, decode copied from `PpuDrawBackground_4bpp`), so terrain
+extends 96px past the sides/top and 48px past the bottom of the frame,
+textured via `kVoxelTex_World` (texture unit 1) and dimmed with distance.
+Key facts (research-confirmed):
+
+- Overworld: `overworld_tileattr` (g_ram+0x2000) holds map16 TILE NUMBERS
+  (0..0xEA7), row-major, fixed stride 64. Big area = full 64x64 (1024px),
+  small = top-left 32x32 only (rest is neighbor-screen garbage). Area origin
+  = (`overworld_offset_base_x`*8, `overworld_offset_base_y`) world px.
+  map8 quads: `GetMap16toMap8Table()[m16*4 + q]`, q = TL,TR,BL,BR.
+- Dungeon: `dung_bg2` (BG2, main floor, VRAM tilemap 0x0000) composited
+  first, `dung_bg1` (BG1, overlay/walkways, 0x1000) on top. **PPU BG1 draws
+  above BG2**; dungeon.c's `_BG1`/`_BG2` table names are inverted.
+- Char base for BG1+BG2 is always VRAM word 0x2000 (`BG12NBA=0x22`, written
+  every NMI); read `ppu->bgLayer[n].tileAdr` anyway.
+- Normal (unflipped) pixels extract MSB-first (`bits >> (7-x)`); ppu.c's
+  `DO_PIXEL` macro name refers to extraction direction, not the flip flag.
+- Atlas refreshes on scene-key change and every 32 frames (covers palette
+  fades, chest/door tile mutations, and the 32 animated water tiles at char
+  ids 0x1C0-0x1DF which are chr-uploaded every frame).
+
 ## Recommended next implementation
 
-1. 3D weather: rain streak billboards / fog planes driven by the overlay
+1. Chase-camera yaw on top of the world atlas (the world now extends past
+   the frame, so a swinging camera has something to show; actors/frame
+   texturing remain screen-space and need care).
+2. 3D weather: rain streak billboards / fog planes driven by the overlay
    index and the SubMath tag, with pre-math ground colors.
-2. True diagonal top faces for slope cells (split the top quad along the
-   tile diagonal).
-3. In-game verification pass on a two-level room (castle sewers) for the
-   per-layer attribute split and upper-level elevation boost.
+3. True diagonal top faces for slope cells.
+4. In-game verification pass on a two-level room (castle sewers).
 
 ## Related documentation
 

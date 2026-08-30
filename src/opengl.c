@@ -10,6 +10,7 @@
 #include "snes/ppu.h"
 #include "zelda_rtl.h"
 #include "tile_detect.h"
+#include "overworld.h"
 
 #define CODE(...) #__VA_ARGS__
 
@@ -23,6 +24,16 @@ static GlTextureWithSize g_texture;
 static GlslShader *g_glsl_shader;
 static bool g_opengl_es;
 
+// World atlas: the loaded map area rasterized from RAM (tilemaps + VRAM +
+// CGRAM), so terrain can extend beyond the edges of the rendered frame.
+static uint32 *g_world_pixels;      // BGRA, g_world_w * g_world_h
+static unsigned int g_world_texture;
+static int g_world_w, g_world_h;            // atlas size in world pixels
+static int g_world_ox, g_world_oy;          // world coords of atlas (0,0)
+static uint32 g_world_key;                  // scene identity for rebuilds
+static uint32 g_world_frame;                // frame counter for refreshes
+static bool g_world_valid;
+
 // Per-fragment texturing modes, carried in the third uv component. The frame
 // texture keeps its per-pixel layer tag in the alpha byte, so the fragment
 // shader can show the real pixel art on terrain tops and cut actors out of
@@ -32,6 +43,7 @@ enum {
   kVoxelTex_Terrain = 1,  // frame pixels; fall back to color on non-world tags
   kVoxelTex_Actor = 2,    // frame pixels; discard non-sprite tags
   kVoxelTex_Shadow = 3,   // translucent black contact shadow
+  kVoxelTex_World = 4,    // world-atlas pixels (off-screen terrain), tinted by color
 };
 
 typedef struct VoxelVertex {
@@ -85,7 +97,9 @@ static void VoxelCube(VoxelVertex *vertices, int *count, float x, float y, float
 typedef struct VoxelCell {
   float r, g, b;  // terrain color (side shading + fill under actors/UI)
   float height;
+  float fade;     // distance dimming for off-screen world cells
   bool upper;     // indoors: cell's pixels mostly come from the upper level (BG2)
+  bool off;       // cell lies outside the rendered frame (atlas-textured)
 } VoxelCell;
 
 // Terrain profile from the game's tile attribute maps: walls rise, floors
@@ -309,6 +323,141 @@ cleanup:
   free(attr), free(region), free(queue), free(level), free(cup), free(cdn);
 }
 
+// ---- World atlas ----------------------------------------------------------
+// The full loaded map lives in RAM (dungeon room tilemaps / overworld map16
+// grid), so the world can be rasterized from VRAM+CGRAM exactly the way the
+// PPU draws it - giving terrain beyond the edges of the rendered frame.
+
+// Rasterize one 4bpp BG tilemap word at (dx, dy). `over` keeps existing
+// pixels where this tile is transparent (used to layer BG2 over BG1).
+static void VoxelRasterTile(uint32 *dst, int dst_w, int dx, int dy,
+                            uint16 tile, int tile_base, bool over) {
+  Ppu *ppu = g_zenv.ppu;
+  for (int y = 0; y < 8; y++) {
+    int fine = (tile & 0x8000) ? 7 - y : y;
+    const uint16 *addr = &ppu->vram[(tile_base + (tile & 0x3ff) * 16 + fine) & 0x7fff];
+    uint32 bits = addr[0] | (uint32)addr[8] << 16;
+    uint32 *out = dst + (size_t)(dy + y) * dst_w + dx;
+    uint32 pal = (tile & 0x1c00) >> 6;
+    for (int x = 0; x < 8; x++) {
+      int i = (tile & 0x4000) ? x : 7 - x;
+      uint32 pixel = (bits >> i) & 1 | (bits >> (7 + i)) & 2 |
+                     (bits >> (14 + i)) & 4 | (bits >> (21 + i)) & 8;
+      if (!pixel && over)
+        continue;
+      uint32 c = ppu->cgram[pixel ? pal + pixel : 0];
+      out[x] = 0xff000000u |
+               (uint32)ppu->brightnessMult[c & 0x1f] << 16 |
+               (uint32)ppu->brightnessMult[(c >> 5) & 0x1f] << 8 |
+               (uint32)ppu->brightnessMult[(c >> 10) & 0x1f];
+    }
+  }
+}
+
+static bool VoxelWorldBuildDungeon(void) {
+  // The whole 512x512 room is in dung_bg2/dung_bg1 (64x64 tilemap words).
+  // PPU BG2 (dung_bg2) is the room's main layer and PPU BG1 (dung_bg1) the
+  // overlay drawn on top of it, so composite bg2 first, bg1 over.
+  Ppu *ppu = g_zenv.ppu;
+  g_world_w = 512, g_world_h = 512;
+  g_world_ox = (((int)(uint16)BG2HOFS_copy + 128) & ~0x1ff);
+  g_world_oy = (((int)(uint16)BG2VOFS_copy + 112) & ~0x1ff);
+  for (int ty = 0; ty < 64; ty++) {
+    for (int tx = 0; tx < 64; tx++) {
+      int k = ty * 64 + tx;
+      VoxelRasterTile(g_world_pixels, 512, tx * 8, ty * 8,
+                      dung_bg2[k], ppu->bgLayer[1].tileAdr, false);
+      VoxelRasterTile(g_world_pixels, 512, tx * 8, ty * 8,
+                      dung_bg1[k], ppu->bgLayer[0].tileAdr, true);
+    }
+  }
+  return true;
+}
+
+static bool VoxelWorldBuildOverworld(void) {
+  // overworld_tileattr holds the loaded area's map16 tile numbers, row-major
+  // with a fixed stride of 64; a big (2x2-screen) area uses the whole 64x64
+  // buffer, a small area only its top-left 32x32 quadrant (the rest holds
+  // neighbor-screen data that the masked lookups never address).
+  Ppu *ppu = g_zenv.ppu;
+  int w = overworld_area_is_big ? 1024 : 512;
+  g_world_w = w, g_world_h = w;
+  g_world_ox = (int)(uint16)overworld_offset_base_x * 8;
+  g_world_oy = (int)(uint16)overworld_offset_base_y;
+  const uint16 *m8tab = GetMap16toMap8Table();
+  int tile_base = ppu->bgLayer[1].tileAdr;
+  for (int y16 = 0; y16 < w / 16; y16++) {
+    for (int x16 = 0; x16 < w / 16; x16++) {
+      int m16 = overworld_tileattr[y16 * 64 + x16];
+      if (m16 >= 0xea8)
+        continue;  // outside the map16 asset range (stale buffer data)
+      for (int q = 0; q < 4; q++) {
+        VoxelRasterTile(g_world_pixels, w, x16 * 16 + (q & 1) * 8,
+                        y16 * 16 + (q >> 1) * 8, m8tab[m16 * 4 + q],
+                        tile_base, false);
+      }
+    }
+  }
+  return true;
+}
+
+static bool VoxelWorldAtlas_Refresh(void) {
+  if (!g_world_pixels) {
+    g_world_pixels = malloc(1024 * 1024 * sizeof(uint32));
+    if (!g_world_pixels)
+      return false;
+  }
+  uint32 key;
+  if (player_is_indoors) {
+    key = 0x80000000u |
+          (uint32)((((int)(uint16)BG2HOFS_copy + 128) >> 9) & 0xff) << 8 |
+          (uint32)((((int)(uint16)BG2VOFS_copy + 112) >> 9) & 0xff);
+  } else {
+    key = 0x40000000u | (uint32)(uint16)overworld_offset_base_x << 16 |
+          (uint16)overworld_offset_base_y;
+  }
+  g_world_frame++;
+  // Periodic re-rasterize keeps palette fades and tile animation fresh.
+  if (key == g_world_key && g_world_valid && (g_world_frame & 31) != 0)
+    return true;
+  g_world_key = key;
+  g_world_valid = player_is_indoors ? VoxelWorldBuildDungeon()
+                                    : VoxelWorldBuildOverworld();
+  if (g_world_valid) {
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, g_world_texture);
+    if (!g_opengl_es)
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_world_w, g_world_h, 0, GL_BGRA,
+                   GL_UNSIGNED_INT_8_8_8_8_REV, g_world_pixels);
+    else
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_world_w, g_world_h, 0, GL_BGRA,
+                   GL_UNSIGNED_BYTE, g_world_pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glActiveTexture(GL_TEXTURE0);
+  }
+  return g_world_valid;
+}
+
+// Average atlas color over a world-pixel rect; false if outside the atlas.
+static bool VoxelWorldCell(int wx, int wy, int w, int h,
+                           float *r, float *g, float *b) {
+  int x0 = wx - g_world_ox, y0 = wy - g_world_oy;
+  if (!g_world_valid || x0 < 0 || y0 < 0 || x0 + w > g_world_w || y0 + h > g_world_h)
+    return false;
+  unsigned sr = 0, sg = 0, sb = 0;
+  for (int y = 0; y < h; y++) {
+    const uint32 *line = g_world_pixels + (size_t)(y0 + y) * g_world_w + x0;
+    for (int x = 0; x < w; x++)
+      sb += line[x] & 255, sg += (line[x] >> 8) & 255, sr += (line[x] >> 16) & 255;
+  }
+  float n = (float)(w * h) * 255.0f;
+  *r = sr / n, *g = sg / n, *b = sb / n;
+  return true;
+}
+
 static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
                                int pitch, int viewport_x, int viewport_y,
                                int viewport_width, int viewport_height) {
@@ -329,12 +478,20 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   int gx = wx0 % snes_step, gy = wy0 % snes_step;
   if (gx < 0) gx += snes_step;
   if (gy < 0) gy += snes_step;
-  const int fx_start = -gx * rscale, fy_start = -gy * rscale;
-  const int cols = (width - fx_start + step - 1) / step;
-  const int rows = (height - fy_start + step - 1) / step;
   // Tile attributes describe the loaded scene; the upsampled mode7 path has
   // no attribute map, so it falls back to pure luminance heights.
   const bool use_attr = rscale == 1;
+  // With a valid world atlas the grid extends past the frame: the far rows
+  // recede toward the horizon and the sides converge in perspective, so the
+  // diorama sits inside a larger world instead of ending at the screen.
+  // Margins are multiples of every supported voxel size to keep alignment.
+  const bool world_ok = use_attr && VoxelWorldAtlas_Refresh();
+  const int ext_side = world_ok ? 96 : 0, ext_top = world_ok ? 96 : 0;
+  const int ext_bottom = world_ok ? 48 : 0;
+  const int fx_start = -gx * rscale - ext_side * rscale;
+  const int fy_start = -gy * rscale - ext_top * rscale;
+  const int cols = (width + ext_side * rscale - fx_start + step - 1) / step;
+  const int rows = (height + ext_bottom * rscale - fy_start + step - 1) / step;
 
   VoxelCell *cells = malloc((size_t)cols * rows * sizeof(*cells));
   VoxelVertex *vertices = malloc(((size_t)cols * rows * 2 + 1) * 24 * sizeof(*vertices));
@@ -347,10 +504,44 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   for (int row = 0; row < rows; row++) {
     for (int col = 0; col < cols; col++) {
       int fx0 = fx_start + col * step, fy0 = fy_start + row * step;
+      VoxelCell *c = &cells[row * cols + col];
+      c->fade = 1.0f, c->off = false, c->upper = false;
+      bool inside = fx0 >= 0 && fy0 >= 0 && fx0 + step <= width &&
+                    fy0 + step <= height;
+      if (!inside && world_ok) {
+        // Off-screen (or frame-edge) cell: built purely from the map atlas,
+        // dimmed with distance so the world recedes into the dark.
+        c->off = true;
+        int cwx = wx0 + fx0 / rscale, cwy = wy0 + fy0 / rscale;
+        float rr, gg, bb;
+        if (!VoxelWorldCell(cwx, cwy, snes_step, snes_step, &rr, &gg, &bb)) {
+          c->height = kCellVoid;
+          continue;
+        }
+        float luminance = rr * .299f + gg * .587f + bb * .114f;
+        if (luminance < .025f) {
+          c->height = kCellVoid;
+          continue;
+        }
+        uint8 attr = VoxelTileAttrAt(cwx + snes_step / 2, cwy + snes_step / 2, false);
+        if (VoxelAttrIsSlope(attr)) {
+          float gh = VoxelAttrGroundHeight(luminance, height_scale);
+          float wh = VoxelAttrWallHeight(luminance, height_scale);
+          float frac = VoxelSlopeFraction(attr, cwx, cwy, snes_step, snes_step);
+          c->height = gh + (wh - gh) * frac;
+        } else {
+          c->height = VoxelAttrHeight(attr, luminance, height_scale);
+        }
+        int over_x = fx0 < 0 ? -fx0 : (fx0 + step > width ? fx0 + step - width : 0);
+        int over_y = fy0 < 0 ? -fy0 : (fy0 + step > height ? fy0 + step - height : 0);
+        int over = IntMax(over_x, over_y) / rscale;
+        c->fade = 1.0f - .8f * (IntMin(over, 96) / 96.0f);
+        c->r = rr * c->fade, c->g = gg * c->fade, c->b = bb * c->fade;
+        continue;
+      }
       int x0 = fx0 < 0 ? 0 : fx0, y0 = fy0 < 0 ? 0 : fy0;
       int x1 = fx0 + step < width ? fx0 + step : width;
       int y1 = fy0 + step < height ? fy0 + step : height;
-      VoxelCell *c = &cells[row * cols + col];
       unsigned wr = 0, wg = 0, wb = 0, wn = 0;
       unsigned an = 0, un = 0, w1 = 0, w2 = 0;
       for (int y = y0; y < y1; y++) {
@@ -376,7 +567,9 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       // (it falls back to the cell color there), so dialogue glyphs and the
       // HUD cannot contaminate the ground, and the world stays continuous
       // beneath them instead of tearing holes.
-      c->upper = player_is_indoors && w2 >= w1;
+      // Indoors, PPU BG1 (dung_bg1) is the overlay layer drawn above the
+      // BG2 main floor - walkways and bridges live there.
+      c->upper = player_is_indoors && w1 > w2;
       if (wn) {
         c->r = (float)wr / (wn * 255.0f);
         c->g = (float)wg / (wn * 255.0f);
@@ -385,9 +578,9 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
         if (luminance < .025f) {
           c->height = kCellVoid;
         } else if (use_attr) {
-          // In two-level dungeon rooms the winning PPU layer says which
-          // floor a pixel shows: BG2 = upper walkway (attr half +0), BG1 =
-          // the floor below (attr half +0x1000).
+          // The winning PPU layer says which tilemap drew the pixel, and
+          // each attr-table half describes one tilemap: +0 for BG2 (the
+          // main floor), +0x1000 for BG1 (the overlay walkways).
           bool bg1_layer = player_is_indoors && w1 > w2;
           int cwx = wx0 + (x0 + x1) / (2 * rscale);
           int cwy = wy0 + (y0 + y1) / (2 * rscale);
@@ -461,9 +654,16 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
 
   int count = 0;
   // A quiet, slightly raised floor gives the scene a readable silhouette and
-  // keeps the voxelized room from floating in empty space.
-  VoxelCube(vertices, &count, -1.0f, -0.035f, -1.0f, 2.0f, .035f, 2.0f,
-            .018f, .028f, .075f, 0, 0, 0, 0, kVoxelTex_None);
+  // keeps the voxelized world from floating in empty space; it spans the
+  // whole (possibly extended) grid.
+  {
+    float fl_x = -1.0f + fx_start * (2.0f / width);
+    float fl_z = -1.0f + fy_start * (2.0f / height);
+    float fl_w = cols * step * (2.0f / width);
+    float fl_d = rows * step * (2.0f / height);
+    VoxelCube(vertices, &count, fl_x, -0.035f, fl_z, fl_w, .035f, fl_d,
+              .018f, .028f, .075f, 0, 0, 0, 0, kVoxelTex_None);
+  }
   // Terrain cells tile seamlessly and their tops sample the frame's own
   // pixels, so the ground keeps its full pixel-art detail at any block size.
   // Side faces are emitted only down to the neighboring cell's height, so
@@ -476,22 +676,39 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       if (c->height < 0.0f)
         continue;
       int fx0 = fx_start + col * step, fy0 = fy_start + row * step;
-      int x0 = fx0 < 0 ? 0 : fx0, y0 = fy0 < 0 ? 0 : fy0;
-      int x1 = fx0 + step < width ? fx0 + step : width;
-      int y1 = fy0 + step < height ? fy0 + step : height;
-      if (x0 >= x1 || y0 >= y1)
-        continue;
-      float px0 = -1.0f + x0 * pxw, px1 = -1.0f + x1 * pxw;
-      float pz0 = -1.0f + y0 * pxh, pz1 = -1.0f + y1 * pxh;
+      float px0, px1, pz0, pz1, u0, v0, u1, v1, mode, tr, tg, tb;
+      if (c->off) {
+        // Atlas-textured cell: full geometry, uv into the world texture,
+        // top tinted by the distance fade.
+        px0 = -1.0f + fx0 * pxw, px1 = -1.0f + (fx0 + step) * pxw;
+        pz0 = -1.0f + fy0 * pxh, pz1 = -1.0f + (fy0 + step) * pxh;
+        int cwx = wx0 + fx0 / rscale, cwy = wy0 + fy0 / rscale;
+        u0 = (cwx - g_world_ox) / (float)g_world_w;
+        v0 = (cwy - g_world_oy) / (float)g_world_h;
+        u1 = u0 + snes_step / (float)g_world_w;
+        v1 = v0 + snes_step / (float)g_world_h;
+        mode = kVoxelTex_World;
+        tr = tg = tb = c->fade;
+      } else {
+        int x0 = fx0 < 0 ? 0 : fx0, y0 = fy0 < 0 ? 0 : fy0;
+        int x1 = fx0 + step < width ? fx0 + step : width;
+        int y1 = fy0 + step < height ? fy0 + step : height;
+        if (x0 >= x1 || y0 >= y1)
+          continue;
+        px0 = -1.0f + x0 * pxw, px1 = -1.0f + x1 * pxw;
+        pz0 = -1.0f + y0 * pxh, pz1 = -1.0f + y1 * pxh;
+        u0 = x0 * tw, v0 = y0 * th, u1 = x1 * tw, v1 = y1 * th;
+        mode = kVoxelTex_Terrain;
+        tr = c->r, tg = c->g, tb = c->b;
+      }
       float h = c->height;
-      float u0 = x0 * tw, v0 = y0 * th, u1 = x1 * tw, v1 = y1 * th;
       float r = c->r, g = c->g, b = c->b;
-      VoxelPush(vertices, &count, px0, h, pz0, r, g, b, u0, v0, kVoxelTex_Terrain);
-      VoxelPush(vertices, &count, px1, h, pz0, r, g, b, u1, v0, kVoxelTex_Terrain);
-      VoxelPush(vertices, &count, px1, h, pz1, r, g, b, u1, v1, kVoxelTex_Terrain);
-      VoxelPush(vertices, &count, px0, h, pz0, r, g, b, u0, v0, kVoxelTex_Terrain);
-      VoxelPush(vertices, &count, px1, h, pz1, r, g, b, u1, v1, kVoxelTex_Terrain);
-      VoxelPush(vertices, &count, px0, h, pz1, r, g, b, u0, v1, kVoxelTex_Terrain);
+      VoxelPush(vertices, &count, px0, h, pz0, tr, tg, tb, u0, v0, mode);
+      VoxelPush(vertices, &count, px1, h, pz0, tr, tg, tb, u1, v0, mode);
+      VoxelPush(vertices, &count, px1, h, pz1, tr, tg, tb, u1, v1, mode);
+      VoxelPush(vertices, &count, px0, h, pz0, tr, tg, tb, u0, v0, mode);
+      VoxelPush(vertices, &count, px1, h, pz1, tr, tg, tb, u1, v1, mode);
+      VoxelPush(vertices, &count, px0, h, pz1, tr, tg, tb, u0, v1, mode);
       float ns = row + 1 < rows ? cells[(row + 1) * cols + col].height : kCellVoid;
       float ne = col + 1 < cols ? cells[row * cols + col + 1].height : kCellVoid;
       float nw = col > 0 ? cells[row * cols + col - 1].height : kCellVoid;
@@ -638,7 +855,11 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   glBindTexture(GL_TEXTURE_2D, g_texture.gl_texture);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glActiveTexture(GL_TEXTURE1);
+  glBindTexture(GL_TEXTURE_2D, g_world_texture);
+  glActiveTexture(GL_TEXTURE0);
   glUniform1i(glGetUniformLocation(g_voxel_program, "texture1"), 0);
+  glUniform1i(glGetUniformLocation(g_voxel_program, "uWorldTex"), 1);
   glUniform1i(glGetUniformLocation(g_voxel_program, "uHudIsWorld"),
               g_config.voxelize_hud);
   glUniform1f(glGetUniformLocation(g_voxel_program, "uAspect"),
@@ -780,6 +1001,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   }
 
   glGenTextures(1, &g_texture.gl_texture);
+  glGenTextures(1, &g_world_texture);
 
   static const GLchar *voxel_vs_core = "#version 330 core\n" CODE(
     layout(location = 0) in vec3 aPos;
@@ -830,16 +1052,19 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     in vec3 TexData;
     out vec4 FragColor;
     uniform sampler2D texture1;
+    uniform sampler2D uWorldTex;
     uniform int uHudIsWorld;
     uniform float uFlash;
     void main() {
-      if (TexData.z > 2.5) {
+      if (TexData.z > 2.5 && TexData.z < 3.5) {
         float d = length(TexData.xy - vec2(0.5)) * 2.0;
         FragColor = vec4(0.0, 0.0, 0.0, 0.42 * smoothstep(1.0, 0.35, d));
         return;
       }
       vec3 col = Color;
-      if (TexData.z > 0.5) {
+      if (TexData.z > 3.5) {
+        col = texture(uWorldTex, TexData.xy).rgb * Color;
+      } else if (TexData.z > 0.5) {
         vec4 t = texture(texture1, TexData.xy);
         int tag = int(t.a * 255.0 + 0.5);
         int layer = tag & 15;
@@ -860,16 +1085,19 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     in vec3 TexData;
     out vec4 FragColor;
     uniform sampler2D texture1;
+    uniform sampler2D uWorldTex;
     uniform int uHudIsWorld;
     uniform float uFlash;
     void main() {
-      if (TexData.z > 2.5) {
+      if (TexData.z > 2.5 && TexData.z < 3.5) {
         float d = length(TexData.xy - vec2(0.5)) * 2.0;
         FragColor = vec4(0.0, 0.0, 0.0, 0.42 * smoothstep(1.0, 0.35, d));
         return;
       }
       vec3 col = Color;
-      if (TexData.z > 0.5) {
+      if (TexData.z > 3.5) {
+        col = texture(uWorldTex, TexData.xy).rgb * Color;
+      } else if (TexData.z > 0.5) {
         vec4 t = texture(texture1, TexData.xy);
         int tag = int(t.a * 255.0 + 0.5);
         int layer = tag & 15;
