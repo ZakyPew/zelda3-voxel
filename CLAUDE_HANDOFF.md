@@ -281,12 +281,34 @@ overlays (0x95/0x9C/0x97) are still texture-only.
 The chase grid margin also widens to 192px in the camera's facing
 direction (48px behind, 96px lateral) so the vista runs deeper ahead.
 
+## Polish-pass notes (post-review)
+
+- Slope cells are true ramps now (`VoxelSlopeCell` per-corner offsets;
+  side faces hem to neighbors' shared-edge heights via
+  `VoxelNeighborEdgeH`, so ramps meet walls without slits).
+- Terrain emits ALL FOUR side faces (follow cameras can look from any
+  direction; the north face was the missing one).
+- Atlas rebuilds freeze during module 7/9 transitions (registers and map
+  buffers update at different times); dungeon key = `dungeon_room_index`;
+  the pixel buffer is calloc'd; texture storage is reused via
+  glTexSubImage2D; ES builds store/upload RGBA byte order (no BGRA).
+- The vertex shader passes true w through (no near clamp - homogeneous
+  clipping handles behind-eye vertices correctly).
+- `VoxelSize` snaps to {2,3,4,6,8,12} - other values break the margin
+  alignment invariant.
+- Terrace solver treats out-of-area samples as solid boundary (attribute
+  lookups wrap at area edges and imported phantom ledges).
+- Chase snap re-arms on every non-voxel frame; first-person self-cull
+  radius shrunk so nearby enemies stop vanishing; rain anchors to 256px
+  world tiles (constant density, no scroll drift) with landing flecks.
+
 ## Recommended next implementation
 
 1. Fog volumes for the Death Mountain / grove overlays (0x95/0x9C/0x97).
-2. True diagonal top faces for slope cells.
-3. In-game verification pass on a two-level room (castle sewers).
-4. Splash flecks where rain streaks meet terrain tops.
+2. In-game verification pass on a two-level room (castle sewers).
+3. Cache voxel-shader uniform locations (minor perf).
+4. Ease margin changes on chase yaw flips (band fade-in already hides most
+   of the pop).
 
 ## Related documentation
 

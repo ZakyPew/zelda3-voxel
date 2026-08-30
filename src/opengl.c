@@ -103,7 +103,8 @@ static void VoxelQuad(VoxelVertex *vertices, int *count,
 }
 
 // A cube whose top face carries a uv rect into the frame texture (pass
-// kVoxelTex_None to keep it flat-colored). Sides stay flat-shaded.
+// kVoxelTex_None to keep it flat-colored). Sides stay flat-shaded; all four
+// side faces are emitted since follow cameras can view from any direction.
 static void VoxelCube(VoxelVertex *vertices, int *count, float x, float y, float z,
                       float sx, float sy, float sz, float r, float g, float b,
                       float u0, float v0, float u1, float v1, float top_mode) {
@@ -117,6 +118,7 @@ static void VoxelCube(VoxelVertex *vertices, int *count, float x, float y, float
   VoxelQuad(vertices, count, x0,y0,z1, x1,y0,z1, x1,y1,z1, x0,y1,z1, r*.72f,g*.72f,b*.72f);
   VoxelQuad(vertices, count, x1,y0,z0, x1,y0,z1, x1,y1,z1, x1,y1,z0, r*.52f,g*.52f,b*.52f);
   VoxelQuad(vertices, count, x0,y0,z1, x0,y0,z0, x0,y1,z0, x0,y1,z1, r*.62f,g*.62f,b*.62f);
+  VoxelQuad(vertices, count, x1,y0,z0, x0,y0,z0, x0,y1,z0, x1,y1,z0, r*.66f,g*.66f,b*.66f);
 }
 
 // Terrain data for one sampled block of the frame. height is the terrain
@@ -127,9 +129,11 @@ static void VoxelCube(VoxelVertex *vertices, int *count, float x, float y, float
 typedef struct VoxelCell {
   float r, g, b;  // terrain color (side shading + fill under actors/UI)
   float height;
+  float coff[4];  // slope cells: per-corner height offsets (TL,TR,BL,BR)
   float fade;     // distance dimming for off-screen world cells
   bool upper;     // indoors: cell's pixels mostly come from the upper level (BG2)
   bool off;       // cell lies outside the rendered frame (atlas-textured)
+  bool slope;     // top face is a diagonal ramp, not a flat plateau
 } VoxelCell;
 
 // Terrain profile from the game's tile attribute maps: walls rise, floors
@@ -177,24 +181,50 @@ static bool VoxelAttrIsSlope(uint8 a) {
   return (a >= 0x10 && a <= 0x13) || (a >= 0x18 && a <= 0x1B);
 }
 
-// Fraction of a cell's world rect covered by a slope tile's solid triangle,
-// estimated from the four corners plus the center.
-static float VoxelSlopeFraction(uint8 a, int wx, int wy, int w, int h) {
-  int solid = 0;
-  for (int s = 0; s < 5; s++) {
-    int x, y;
-    if (s < 4)
-      x = (wx + (s & 1) * (w - 1)) & 7, y = (wy + (s >> 1) * (h - 1)) & 7;
-    else
-      x = (wx + w / 2) & 7, y = (wy + h / 2) & 7;
-    switch (a & 3) {
-      case 0: solid += x + y <= 7; break;  // NW solid
-      case 1: solid += y <= x; break;      // NE solid
-      case 2: solid += y >= x; break;      // SW solid
-      default: solid += x + y >= 7; break; // SE solid
-    }
+// Linear ramp across a slope tile: 1.0 deep in the solid corner, 0.5 on the
+// diagonal, 0.0 at the opposite corner - so slope cells become true ramps.
+static float VoxelSlopeRamp(uint8 a, int x, int y) {
+  switch (a & 3) {
+    case 0:  return 1.0f - (x + y) * (1.0f / 14.0f);              // NW solid
+    case 1:  return 1.0f - ((7 - x) + y) * (1.0f / 14.0f);        // NE solid
+    case 2:  return 1.0f - (x + (7 - y)) * (1.0f / 14.0f);        // SW solid
+    default: return 1.0f - ((7 - x) + (7 - y)) * (1.0f / 14.0f);  // SE solid
   }
-  return solid * (1.0f / 5.0f);
+}
+
+// Build a slope cell: per-corner heights from the ramp, average as the
+// cell height, offsets stored so lifts applied to the height carry the
+// ramp along unchanged.
+static void VoxelSlopeCell(VoxelCell *c, uint8 attr, float lum, float hs,
+                           int twx, int twy, int w, int h) {
+  float gh = VoxelAttrGroundHeight(lum, hs);
+  float wh = VoxelAttrWallHeight(lum, hs);
+  float sum = 0.0f;
+  for (int i = 0; i < 4; i++) {
+    int x = (twx + (i & 1) * (w - 1)) & 7;
+    int y = (twy + (i >> 1) * (h - 1)) & 7;
+    c->coff[i] = gh + (wh - gh) * VoxelSlopeRamp(attr, x, y);
+    sum += c->coff[i];
+  }
+  c->height = sum * .25f;
+  for (int i = 0; i < 4; i++)
+    c->coff[i] -= c->height;
+  c->slope = true;
+}
+
+// Height of a neighbor cell along the shared edge (its lowest corner on
+// that edge for slope neighbors), used to hem side faces without slits.
+static float VoxelNeighborEdgeH(const VoxelCell *cells, int cols, int rows,
+                                int row, int col, int e0, int e1) {
+  if (row < 0 || row >= rows || col < 0 || col >= cols)
+    return 0.0f;
+  const VoxelCell *n = &cells[row * cols + col];
+  float h = n->height;
+  if (h < 0.0f)
+    return 0.0f;
+  if (n->slope)
+    h += n->coff[e0] < n->coff[e1] ? n->coff[e0] : n->coff[e1];
+  return h < 0.0f ? 0.0f : h;
 }
 
 // Tile attribute at a world-pixel position, mirroring the game's own
@@ -256,7 +286,14 @@ static void VoxelSolveTerraces(VoxelCell *cells, int cols, int rows,
     for (int ac = 0; ac < acols; ac++) {
       int wx = wx0 + (fx_start + (ac - M) * step) / rscale + snes_step / 2;
       int wy = wy0 + (fy_start + (ar - M) * step) / rscale + snes_step / 2;
-      attr[ar * acols + ac] = VoxelTileAttrAt(wx, wy, false);
+      // Attribute lookups wrap at the loaded area's edges, which would
+      // import phantom regions and ledge constraints from the far side of
+      // the map - treat out-of-area samples as solid boundary instead.
+      if (g_world_valid && (wx < g_world_ox || wx >= g_world_ox + g_world_w ||
+                            wy < g_world_oy || wy >= g_world_oy + g_world_h))
+        attr[ar * acols + ac] = 0x01;
+      else
+        attr[ar * acols + ac] = VoxelTileAttrAt(wx, wy, false);
     }
   }
 
@@ -376,10 +413,13 @@ static void VoxelRasterTile(uint32 *dst, int dst_w, int dx, int dy,
       if (!pixel && over)
         continue;
       uint32 c = ppu->cgram[pixel ? pal + pixel : 0];
-      out[x] = 0xff000000u |
-               (uint32)ppu->brightnessMult[c & 0x1f] << 16 |
-               (uint32)ppu->brightnessMult[(c >> 5) & 0x1f] << 8 |
-               (uint32)ppu->brightnessMult[(c >> 10) & 0x1f];
+      uint32 cr = ppu->brightnessMult[c & 0x1f];
+      uint32 cg = ppu->brightnessMult[(c >> 5) & 0x1f];
+      uint32 cb = ppu->brightnessMult[(c >> 10) & 0x1f];
+      // Desktop uploads BGRA words; ES has no BGRA external format, so its
+      // atlas is stored RGBA byte order and uploaded as GL_RGBA.
+      out[x] = 0xff000000u | (g_opengl_es ? cb << 16 | cg << 8 | cr
+                                          : cr << 16 | cg << 8 | cb);
     }
   }
 }
@@ -433,20 +473,26 @@ static bool VoxelWorldBuildOverworld(void) {
 
 static bool VoxelWorldAtlas_Refresh(void) {
   if (!g_world_pixels) {
-    g_world_pixels = malloc(1024 * 1024 * sizeof(uint32));
+    // Zeroed so skipped tiles can never expose uninitialized memory.
+    g_world_pixels = calloc(1024 * 1024, sizeof(uint32));
     if (!g_world_pixels)
       return false;
   }
+  g_world_frame++;
+  // During overworld/dungeon transitions the map registers and buffers
+  // update at different times - freeze the atlas until the scene settles,
+  // then rebuild once from consistent data.
+  bool transitioning = (main_module_index == 9 || main_module_index == 7) &&
+                       submodule_index != 0;
+  if (transitioning)
+    return g_world_valid;
   uint32 key;
   if (player_is_indoors) {
-    key = 0x80000000u |
-          (uint32)((((int)(uint16)BG2HOFS_copy + 128) >> 9) & 0xff) << 8 |
-          (uint32)((((int)(uint16)BG2VOFS_copy + 112) >> 9) & 0xff);
+    key = 0x80000000u | dungeon_room_index;
   } else {
     key = 0x40000000u | (uint32)(uint16)overworld_offset_base_x << 16 |
           (uint16)overworld_offset_base_y;
   }
-  g_world_frame++;
   // Periodic re-rasterize keeps palette fades and tile animation fresh.
   if (key == g_world_key && g_world_valid && (g_world_frame & 31) != 0)
     return true;
@@ -454,18 +500,23 @@ static bool VoxelWorldAtlas_Refresh(void) {
   g_world_valid = player_is_indoors ? VoxelWorldBuildDungeon()
                                     : VoxelWorldBuildOverworld();
   if (g_world_valid) {
+    static int tex_w, tex_h;
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, g_world_texture);
-    if (!g_opengl_es)
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_world_w, g_world_h, 0, GL_BGRA,
-                   GL_UNSIGNED_INT_8_8_8_8_REV, g_world_pixels);
-    else
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_world_w, g_world_h, 0, GL_BGRA,
-                   GL_UNSIGNED_BYTE, g_world_pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLenum fmt = g_opengl_es ? GL_RGBA : GL_BGRA;
+    GLenum type = g_opengl_es ? GL_UNSIGNED_BYTE : GL_UNSIGNED_INT_8_8_8_8_REV;
+    if (tex_w != g_world_w || tex_h != g_world_h) {
+      tex_w = g_world_w, tex_h = g_world_h;
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_world_w, g_world_h, 0, fmt,
+                   type, g_world_pixels);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_world_w, g_world_h, fmt, type,
+                      g_world_pixels);
+    }
     glActiveTexture(GL_TEXTURE0);
   }
   return g_world_valid;
@@ -484,7 +535,11 @@ static bool VoxelWorldCell(int wx, int wy, int w, int h,
       sb += line[x] & 255, sg += (line[x] >> 8) & 255, sr += (line[x] >> 16) & 255;
   }
   float n = (float)(w * h) * 255.0f;
-  *r = sr / n, *g = sg / n, *b = sb / n;
+  if (g_opengl_es) {
+    *r = sb / n, *g = sg / n, *b = sr / n;  // atlas stored RGBA byte order
+  } else {
+    *r = sr / n, *g = sg / n, *b = sb / n;
+  }
   return true;
 }
 
@@ -582,7 +637,7 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
     for (int col = 0; col < cols; col++) {
       int fx0 = fx_start + col * step, fy0 = fy_start + row * step;
       VoxelCell *c = &cells[row * cols + col];
-      c->fade = 1.0f, c->off = false, c->upper = false;
+      c->fade = 1.0f, c->off = false, c->upper = false, c->slope = false;
       bool inside = fx0 >= 0 && fy0 >= 0 && fx0 + step <= width &&
                     fy0 + step <= height;
       if (!inside && world_ok) {
@@ -602,17 +657,17 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
         }
         uint8 attr = VoxelTileAttrAt(cwx + snes_step / 2, cwy + snes_step / 2, false);
         if (VoxelAttrIsSlope(attr)) {
-          float gh = VoxelAttrGroundHeight(luminance, height_scale);
-          float wh = VoxelAttrWallHeight(luminance, height_scale);
-          float frac = VoxelSlopeFraction(attr, cwx, cwy, snes_step, snes_step);
-          c->height = gh + (wh - gh) * frac;
+          VoxelSlopeCell(c, attr, luminance, height_scale, cwx, cwy,
+                         snes_step, snes_step);
         } else {
           c->height = VoxelAttrHeight(attr, luminance, height_scale);
         }
         int over_x = fx0 < 0 ? -fx0 : (fx0 + step > width ? fx0 + step - width : 0);
         int over_y = fy0 < 0 ? -fy0 : (fy0 + step > height ? fy0 + step - height : 0);
         int over = IntMax(over_x, over_y) / rscale;
-        c->fade = 1.0f - .8f * (IntMin(over, 96) / 96.0f);
+        // Fade nearly to black by the deepest margin so bands appearing or
+        // vanishing on camera turns are invisible when they pop.
+        c->fade = 1.0f - .95f * (IntMin(over, 176) / 176.0f);
         c->r = rr * c->fade, c->g = gg * c->fade, c->b = bb * c->fade;
         continue;
       }
@@ -663,16 +718,10 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
           int cwy = wy0 + (y0 + y1) / (2 * rscale);
           uint8 attr = VoxelTileAttrAt(cwx, cwy, bg1_layer);
           if (VoxelAttrIsSlope(attr)) {
-            // Diagonal wall corner: blend ground and wall height by how
-            // much of the cell the solid triangle covers, so corners
-            // chamfer instead of rendering as full square pillars.
-            float gh = VoxelAttrGroundHeight(luminance, height_scale);
-            float wh = VoxelAttrWallHeight(luminance, height_scale);
-            float frac = VoxelSlopeFraction(attr, wx0 + x0 / rscale,
-                                            wy0 + y0 / rscale,
-                                            (x1 - x0) / rscale,
-                                            (y1 - y0) / rscale);
-            c->height = gh + (wh - gh) * frac;
+            // Diagonal wall corner: build a true ramp across the cell.
+            VoxelSlopeCell(c, attr, luminance, height_scale,
+                           wx0 + x0 / rscale, wy0 + y0 / rscale,
+                           (x1 - x0) / rscale, (y1 - y0) / rscale);
           } else {
             c->height = VoxelAttrHeight(attr, luminance, height_scale);
             // Dungeon furniture often shares the collision class used by
@@ -793,28 +842,39 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
           continue;
       }
       float h = c->height;
+      // Slope cells carry a diagonal ramp in their corner offsets; flat
+      // cells keep all four corners at the cell height.
+      float y00 = h, y10 = h, y01 = h, y11 = h;
+      if (c->slope) {
+        y00 += c->coff[0], y10 += c->coff[1];
+        y01 += c->coff[2], y11 += c->coff[3];
+      }
       float r = c->r, g = c->g, b = c->b;
-      VoxelPush(vertices, &count, px0, h, pz0, tr, tg, tb, u0, v0, mode);
-      VoxelPush(vertices, &count, px1, h, pz0, tr, tg, tb, u1, v0, mode);
-      VoxelPush(vertices, &count, px1, h, pz1, tr, tg, tb, u1, v1, mode);
-      VoxelPush(vertices, &count, px0, h, pz0, tr, tg, tb, u0, v0, mode);
-      VoxelPush(vertices, &count, px1, h, pz1, tr, tg, tb, u1, v1, mode);
-      VoxelPush(vertices, &count, px0, h, pz1, tr, tg, tb, u0, v1, mode);
-      float ns = row + 1 < rows ? cells[(row + 1) * cols + col].height : kCellVoid;
-      float ne = col + 1 < cols ? cells[row * cols + col + 1].height : kCellVoid;
-      float nw = col > 0 ? cells[row * cols + col - 1].height : kCellVoid;
-      if (ns < 0.0f) ns = 0.0f;
-      if (ne < 0.0f) ne = 0.0f;
-      if (nw < 0.0f) nw = 0.0f;
-      if (h > ns + .0005f)
-        VoxelQuad(vertices, &count, px0,ns,pz1, px1,ns,pz1, px1,h,pz1, px0,h,pz1,
+      VoxelPush(vertices, &count, px0, y00, pz0, tr, tg, tb, u0, v0, mode);
+      VoxelPush(vertices, &count, px1, y10, pz0, tr, tg, tb, u1, v0, mode);
+      VoxelPush(vertices, &count, px1, y11, pz1, tr, tg, tb, u1, v1, mode);
+      VoxelPush(vertices, &count, px0, y00, pz0, tr, tg, tb, u0, v0, mode);
+      VoxelPush(vertices, &count, px1, y11, pz1, tr, tg, tb, u1, v1, mode);
+      VoxelPush(vertices, &count, px0, y01, pz1, tr, tg, tb, u0, v1, mode);
+      // All four sides, hemmed to each neighbor's shared-edge height so
+      // slope ramps meet walls without slits; the north face matters when
+      // follow cameras look from the south.
+      float ns = VoxelNeighborEdgeH(cells, cols, rows, row + 1, col, 0, 1);
+      float ne = VoxelNeighborEdgeH(cells, cols, rows, row, col + 1, 0, 2);
+      float nw = VoxelNeighborEdgeH(cells, cols, rows, row, col - 1, 1, 3);
+      float nn = VoxelNeighborEdgeH(cells, cols, rows, row - 1, col, 2, 3);
+      if (y01 > ns + .0005f || y11 > ns + .0005f)
+        VoxelQuad(vertices, &count, px0,ns,pz1, px1,ns,pz1, px1,y11,pz1, px0,y01,pz1,
                   r*.72f, g*.72f, b*.72f);
-      if (h > ne + .0005f)
-        VoxelQuad(vertices, &count, px1,ne,pz0, px1,ne,pz1, px1,h,pz1, px1,h,pz0,
+      if (y10 > ne + .0005f || y11 > ne + .0005f)
+        VoxelQuad(vertices, &count, px1,ne,pz0, px1,ne,pz1, px1,y11,pz1, px1,y10,pz0,
                   r*.52f, g*.52f, b*.52f);
-      if (h > nw + .0005f)
-        VoxelQuad(vertices, &count, px0,nw,pz1, px0,nw,pz0, px0,h,pz0, px0,h,pz1,
+      if (y00 > nw + .0005f || y01 > nw + .0005f)
+        VoxelQuad(vertices, &count, px0,nw,pz1, px0,nw,pz0, px0,y00,pz0, px0,y01,pz1,
                   r*.62f, g*.62f, b*.62f);
+      if (y00 > nn + .0005f || y10 > nn + .0005f)
+        VoxelQuad(vertices, &count, px1,nn,pz0, px0,nn,pz0, px0,y00,pz0, px1,y10,pz0,
+                  r*.66f, g*.66f, b*.66f);
     }
   }
 
@@ -915,7 +975,7 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       if (first_person) {
         float dxm = (px0 + px1) * .5f - pivot_x, dzm = pz - pivot_z;
         if (dxm * cull_sy + dzm * cull_cy > .35f ||
-            dxm * dxm + dzm * dzm < .04f)
+            dxm * dxm + dzm * dzm < .01f)
           continue;  // behind the camera, or Link's own billboard
       }
       float h = (fy1 - fy0) * pxw;  // square source pixels stay square upright
@@ -959,21 +1019,53 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // terrain and walls occlude them, and they share the translucent
   // depth-write-off pass with the shadows.
   if (world_ok && !player_is_indoors && (overlay_index & 0xff) == 0x9f) {
-    float x0r = -1.0f + fx_start * pxw;
-    float x1r = -1.0f + (fx_start + cols * step) * pxw;
-    float z0r = -1.0f + fy_start * pxh;
-    float z1r = -1.0f + (fy_start + rows * step) * pxh;
+    // Drops anchor to 256px world tiles, so the storm stays fixed relative
+    // to the terrain while scrolling and keeps constant density in every
+    // camera mode.
     float cyw = cosf(yaw), syw = sinf(yaw);
-    for (int i = 0; i < 260; i++) {
-      uint32 h1 = (uint32)(i + 1) * 2654435761u;
-      float rx = x0r + (float)(h1 & 0xffff) * (1.0f / 65535.0f) * (x1r - x0r);
-      float rz = z0r + (float)(h1 >> 16) * (1.0f / 65535.0f) * (z1r - z0r);
-      float phase = (float)((h1 >> 7) & 0x1ff) * (1.0f / 512.0f);
+    int wxa = wx0 + fx_start / rscale, wya = wy0 + fy_start / rscale;
+    int wxb = wxa + cols * snes_step, wyb = wya + rows * snes_step;
+    int emitted = 0;
+    for (int ty = wya >> 8; ty <= (wyb - 1) >> 8 && emitted < 420; ty++) {
+    for (int tx = wxa >> 8; tx <= (wxb - 1) >> 8 && emitted < 420; tx++) {
+    for (int k = 0; k < 28 && emitted < 420; k++) {
+      uint32 h1 = ((uint32)tx * 73856093u) ^ ((uint32)ty * 19349663u) ^
+                  ((uint32)(k + 1) * 2654435761u);
+      int wpx = (tx << 8) + (int)(h1 & 0xff);
+      int wpy = (ty << 8) + (int)((h1 >> 8) & 0xff);
+      if (wpx < wxa || wpx >= wxb || wpy < wya || wpy >= wyb)
+        continue;
+      emitted++;
+      float rx = -1.0f + (wpx - wx0) * rscale * pxw;
+      float rz = -1.0f + (wpy - wy0) * rscale * pxh;
+      float phase = (float)((h1 >> 16) & 0x1ff) * (1.0f / 512.0f);
       float fall = fmodf((float)g_world_frame * .045f + phase * 1.13f, 1.13f);
       float ry = 1.0f - fall;
       if (ry < 0.0f)
         continue;
+      // Ground height under this streak, for landing splashes and culling
+      // the part of the fall that would be inside the terrain.
+      int scol = ((int)((rx + 1.0f) * width * .5f) - fx_start) / step;
+      int srow = ((int)((rz + 1.0f) * height * .5f) - fy_start) / step;
+      if (scol < 0) scol = 0;
+      if (scol >= cols) scol = cols - 1;
+      if (srow < 0) srow = 0;
+      if (srow >= rows) srow = rows - 1;
+      float gh = cells[srow * cols + scol].height;
+      if (gh < 0.0f) gh = 0.0f;
       float len = .085f, w = .0045f, slant = .02f;
+      if (ry <= gh + .05f) {
+        // Landing: a small bright fleck flashes on the ground.
+        float s = .014f, sy2 = gh + .006f;
+        VoxelPush(vertices, &count, rx - s, sy2, rz, .85f, .90f, 1.0f, 0, 0, kVoxelTex_Rain);
+        VoxelPush(vertices, &count, rx, sy2, rz - s, .85f, .90f, 1.0f, 0, 0, kVoxelTex_Rain);
+        VoxelPush(vertices, &count, rx + s, sy2, rz, .85f, .90f, 1.0f, 0, 0, kVoxelTex_Rain);
+        VoxelPush(vertices, &count, rx - s, sy2, rz, .85f, .90f, 1.0f, 0, 0, kVoxelTex_Rain);
+        VoxelPush(vertices, &count, rx + s, sy2, rz, .85f, .90f, 1.0f, 0, 0, kVoxelTex_Rain);
+        VoxelPush(vertices, &count, rx, sy2, rz + s, .85f, .90f, 1.0f, 0, 0, kVoxelTex_Rain);
+        if (ry + len < gh)
+          continue;  // remaining streak is fully inside the terrain
+      }
       float ox = w * cyw, oz = -w * syw;             // camera-facing width axis
       float sx2 = slant * cyw, sz2 = -slant * syw;   // wind slant, same axis
       VoxelPush(vertices, &count, rx - ox, ry, rz - oz, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
@@ -982,7 +1074,7 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       VoxelPush(vertices, &count, rx - ox, ry, rz - oz, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
       VoxelPush(vertices, &count, rx + ox + sx2, ry + len, rz + oz + sz2, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
       VoxelPush(vertices, &count, rx - ox + sx2, ry + len, rz - oz + sz2, .72f, .80f, 1.0f, 0, 0, kVoxelTex_Rain);
-    }
+    }}}
   }
 
   glBindVertexArray(g_voxel_VAO);
@@ -1170,7 +1262,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
       p.z = d.x * sy + d.y * cy + uDist;
       float cp = cos(uPitch), sp = sin(uPitch);
       float y = p.y * cp - p.z * sp;
-      float z = max(3.15 - p.z * cp - p.y * sp, 0.1);
+      float z = 3.15 - p.z * cp - p.y * sp;
       gl_Position = vec4(p.x * 2.1 * uZoom / uAspect, (y - 0.05) * 1.7 * uZoom,
                          z - 1.0, z);
       Color = aColor;
@@ -1197,7 +1289,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
       p.z = d.x * sy + d.y * cy + uDist;
       float cp = cos(uPitch), sp = sin(uPitch);
       float y = p.y * cp - p.z * sp;
-      float z = max(3.15 - p.z * cp - p.y * sp, 0.1);
+      float z = 3.15 - p.z * cp - p.y * sp;
       gl_Position = vec4(p.x * 2.1 * uZoom / uAspect, (y - 0.05) * 1.7 * uZoom,
                          z - 1.0, z);
       Color = aColor;
@@ -1553,6 +1645,10 @@ static void OpenGLRenderer_EndDraw() {
     SDL_GL_SwapWindow(g_window);
     return;
   }
+
+  // Any frame presented without the voxel scene (menus, loads, map screens)
+  // re-arms the chase snap, so the camera never eases from a stale pose.
+  g_chase_snap = true;
 
   if (g_glsl_shader == NULL) {
     glViewport(viewport_x, viewport_y, viewport_width, viewport_height);

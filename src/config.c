@@ -373,7 +373,16 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
     } else if (StringEqualsNoCase(key, "VoxelizeHud")) {
       return ParseBool(value, &g_config.voxelize_hud);
     } else if (StringEqualsNoCase(key, "VoxelSize")) {
-      g_config.voxel_size = (uint8)IntMax(2, IntMin(12, atoi(value)));
+      // Only sizes that divide the renderer's grid margins keep the
+      // world-anchored sampling stable; snap to the nearest valid one.
+      static const uint8 kValidVoxelSizes[] = { 2, 3, 4, 6, 8, 12 };
+      int want = atoi(value), best = 4, err = 100;
+      for (size_t i = 0; i < countof(kValidVoxelSizes); i++) {
+        int e = abs(want - kValidVoxelSizes[i]);
+        if (e < err)
+          err = e, best = kValidVoxelSizes[i];
+      }
+      g_config.voxel_size = (uint8)best;
       return true;
     } else if (StringEqualsNoCase(key, "VoxelHeight")) {
       g_config.voxel_height = (uint8)IntMax(5, IntMin(100, atoi(value)));
