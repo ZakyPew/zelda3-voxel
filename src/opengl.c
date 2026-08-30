@@ -396,6 +396,28 @@ static void OpenGLRenderer_DrawUiOverlay(int viewport_x, int viewport_y,
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
+static void OpenGLRenderer_DrawDialoguePanel(int viewport_x, int viewport_y,
+                                             int viewport_width, int viewport_height) {
+  // The dialogue border is split between several PPU backgrounds, while the
+  // letters themselves are BG3.  Drawing BG3 alone leaves loose giant text
+  // over the diorama.  Restore the entire native lower message area as one
+  // flat panel, precisely aligned with the game's source frame.
+  const int source_top = 128;
+  int panel_height = viewport_height * (g_draw_height - source_top) / g_draw_height;
+  if (panel_height <= 0)
+    return;
+  glBindTexture(GL_TEXTURE_2D, g_texture.gl_texture);
+  glUseProgram(g_program);
+  glBindVertexArray(g_VAO);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glViewport(viewport_x, viewport_y, viewport_width, viewport_height);
+  glEnable(GL_SCISSOR_TEST);
+  glScissor(viewport_x, viewport_y, viewport_width, panel_height);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glDisable(GL_SCISSOR_TEST);
+}
+
 static void GL_APIENTRY MessageCallback(GLenum source,
                 GLenum type,
                 GLuint id,
@@ -791,6 +813,8 @@ static void OpenGLRenderer_EndDraw() {
   if (g_config.voxel_mode && voxel_scene && g_glsl_shader == NULL) {
     VoxelRenderer_Draw(g_draw_width, g_draw_height, g_screen_buffer, g_draw_width * 4,
                        viewport_x, viewport_y, viewport_width, viewport_height);
+    if (!g_config.voxelize_hud && main_module_index == 14 && submodule_index == 2)
+      OpenGLRenderer_DrawDialoguePanel(viewport_x, viewport_y, viewport_width, viewport_height);
     if (!g_config.voxelize_hud)
       OpenGLRenderer_DrawUiOverlay(viewport_x, viewport_y, viewport_width, viewport_height);
     SDL_GL_SwapWindow(g_window);
