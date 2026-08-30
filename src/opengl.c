@@ -392,6 +392,57 @@ static void OpenGLRenderer_DrawUiOverlay(int viewport_x, int viewport_y,
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glViewport(viewport_x, viewport_y, viewport_width, viewport_height);
+
+  // During dialogue, back the message with a translucent scrim spanning the
+  // rows its BG3 pixels actually occupy, so box-less text (like the intro
+  // telepathy) reads as an anchored subtitle bar instead of loose glyphs
+  // floating over the diorama.
+  if (main_module_index == 14 && submodule_index == 2 && g_draw_height <= 960) {
+    uint8 row_has_ui[960];
+    memset(row_has_ui, 0, g_draw_height);
+    for (int y = 0; y < g_draw_height; y++) {
+      const uint32 *line = (const uint32 *)(g_screen_buffer + (size_t)y * g_draw_width * 4);
+      for (int x = 0; x < g_draw_width; x++) {
+        uint32 tag = line[x] >> 24;
+        if (tag >= kPpuPixelTag_Valid &&
+            (tag & kPpuPixelTag_LayerMask) == kPpuPixelTag_Bg3) {
+          row_has_ui[y] = 1;
+          break;
+        }
+      }
+    }
+    // The message band is the contiguous UI row run (small gaps allowed)
+    // that ends at the bottom-most UI row; walking up from there keeps the
+    // HUD's own rows out of the band for bottom-positioned messages.
+    int rscale = g_draw_height >= 400 ? 4 : 1;
+    int last = -1;
+    for (int y = 0; y < g_draw_height; y++)
+      if (row_has_ui[y])
+        last = y;
+    if (last >= 0) {
+      int first = last, gap = 0, tolerance = 8 * rscale;
+      for (int y = last; y >= 0; y--) {
+        if (row_has_ui[y])
+          first = y, gap = 0;
+        else if (++gap > tolerance)
+          break;
+      }
+      int pad = 5 * rscale;
+      first = IntMax(first - pad, 0);
+      last = IntMin(last + pad + 1, g_draw_height);
+      int sy = viewport_y + viewport_height - last * viewport_height / g_draw_height;
+      int sh = (last - first) * viewport_height / g_draw_height;
+      glUniform1i(glGetUniformLocation(g_hud_program, "uScrim"), 1);
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      glEnable(GL_SCISSOR_TEST);
+      glScissor(viewport_x, sy, viewport_width, sh);
+      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+      glDisable(GL_SCISSOR_TEST);
+      glDisable(GL_BLEND);
+    }
+  }
+  glUniform1i(glGetUniformLocation(g_hud_program, "uScrim"), 0);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
@@ -676,7 +727,12 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   out vec4 FragColor;
   in vec2 TexCoord;
   uniform sampler2D texture1;
+  uniform int uScrim;
   void main() {
+    if (uScrim == 1) {
+      FragColor = vec4(0.0, 0.0, 0.0, 0.55);
+      return;
+    }
     vec4 color = texture(texture1, TexCoord);
     int tag = int(color.a * 255.0 + 0.5);
     if (tag < 16 || (tag & 15) != 2) discard;
@@ -688,7 +744,12 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   out vec4 FragColor;
   in vec2 TexCoord;
   uniform sampler2D texture1;
+  uniform int uScrim;
   void main() {
+    if (uScrim == 1) {
+      FragColor = vec4(0.0, 0.0, 0.0, 0.55);
+      return;
+    }
     vec4 color = texture(texture1, TexCoord);
     int tag = int(color.a * 255.0 + 0.5);
     if (tag < 16 || (tag & 15) != 2) discard;
