@@ -175,24 +175,50 @@ single-file launcher + default zelda3.ini + README (from
 (ROM-derived — never distribute it). Rebuild by copying fresh binaries from
 `build\Release` into `build\dist\Zelda3-Voxel-Alpha-<ver>` and re-zipping.
 
+## Terrain semantics (research-confirmed, do not re-derive)
+
+- Slope attrs: 0x10-0x13 are 45-degree diagonal walls (inner corners),
+  0x18-0x1B their outer/convex variants. Orientation = attr&3 with
+  tile-local x=0 west, y=0 north: 0 = NW triangle solid (x+y<=7),
+  1 = NE (y<=x), 2 = SW (y>=x), 3 = SE (x+y>=7) — from kSlopedTile in
+  src\sprite.c. **0x14-0x17 are NOT slopes** — plain walkable tiles.
+  The renderer chamfers slope cells by corner-sampling the triangle
+  (`VoxelSlopeFraction`).
+- Dungeon attr halves: `dung_bg2_attr_table` +0 describes the PPU **BG2**
+  tilemap = the **upper** level; +0x1000 (alias `dung_bg1_attr_table`)
+  describes PPU **BG1** = the **lower** level. The renderer picks the half
+  per cell from the winning-layer majority (BG1 vs BG2 pixel counts) and
+  raises upper-level cells when a room has meaningful BG1 coverage
+  (two-level rooms). Beware: dungeon.c's `_BG1`/`_BG2` table names are
+  swapped relative to the hardware layers.
+- Weather (rain/fog/canopy) lives ONLY on the subscreen (BG1, TS=1) and
+  reaches the frame via color math — it never wins a main-screen pixel, so
+  it never changes tags. The PPU sets `kPpuPixelTag_SubMath` (0x20) on
+  pixels a subscreen color was mathed into. Lightning = CGADSUB_copy
+  flipping 0x72 -> 0x32; the voxel shader brightens the scene via `uFlash`.
+  Rain streaks intentionally ride the terrain-top texture for now.
+- The sampling grid anchors to `BG2HOFS_copy`/`BG2VOFS_copy` (NOT the
+  `_copy2` variants — those exclude the quake-shake offset the PPU shows).
+
 ## Known limitations
 
-1. Multi-level dungeon rooms use the lower floor's attribute half
-   (`dung_bg2_attr_table` +0x1000 for upper floors is not selected yet).
-2. Overlapping distinct actors merge into one cluster while they touch
+1. Overlapping distinct actors merge into one cluster while they touch
    (visually benign; they separate again when apart).
-3. The game's own OAM shadow sprites (under flying enemies) billboard upright
+2. The game's own OAM shadow sprites (under flying enemies) billboard upright
    like any sprite — small dark discs standing on the ground.
-4. Weather/translucency overlays (rain, fog) tag as their source BG layer and
-   melt into terrain colors.
-5. Sloped wall corners (attrs 0x10-0x1B) render as full-height blocks, not
-   diagonal geometry.
+3. Rain/fog render as texture on the ground plus a scene-wide lightning
+   flash; true 3D rain particles / fog volumes are future work (the
+   kPpuPixelTag_SubMath bit exists to support them).
+4. Slope chamfers are cell-resolution steps, not true diagonal geometry.
 
 ## Recommended next implementation
 
-1. Floor-aware attribute lookup for multi-level dungeon rooms.
-2. Separate effect layer for weather overlays.
-3. Diagonal top faces for sloped wall corner tiles.
+1. 3D weather: rain streak billboards / fog planes driven by the overlay
+   index and the SubMath tag, with pre-math ground colors.
+2. True diagonal top faces for slope cells (split the top quad along the
+   tile diagonal).
+3. In-game verification pass on a two-level room (castle sewers) for the
+   per-layer attribute split and upper-level elevation boost.
 
 ## Related documentation
 

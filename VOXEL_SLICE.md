@@ -94,9 +94,15 @@ launcher, default settings, and a README. It deliberately excludes
 `zelda3_assets.dat` — players supply their own asset pack built from their
 ROM. Rebuild the package by copying fresh binaries from `build\Release`.
 
+Diagonal wall corners chamfer instead of rendering as square pillars,
+two-level dungeon rooms pick each pixel's floor from the PPU layer that drew
+it (upper walkways rise above the floor below), actors cast soft radial
+contact shadows that can never occlude another actor, and lightning during
+the rainstorm flashes across the whole diorama.
+
 ## Next implementation slice
 
-- Height-aware actor grounding on multi-level dungeon floors (upper decks
-  currently use the lower floor's attribute table).
-- Weather/translucency overlays (rain, fog) as separate effect layers.
-- Slope geometry for the 0x10-0x1B diagonal wall corners.
+- True 3D weather: rain-streak billboards and fog volumes in the scene
+  instead of texture-borne streaks.
+- Diagonal top faces for slope cells (geometry, not just stepped heights).
+- Verify the two-level room handling in the castle sewers.

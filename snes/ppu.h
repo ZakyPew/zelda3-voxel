@@ -57,6 +57,10 @@ enum {
   kPpuPixelTag_Sprite = 4,
   kPpuPixelTag_SpriteNoMath = 6,
   kPpuPixelTag_Backdrop = 5,
+  // Set when a subscreen pixel was color-mathed into this pixel (weather
+  // overlays like rain/fog/canopy live only on the subscreen), so
+  // presentation layers can tell weather-tinted pixels from clean ones.
+  kPpuPixelTag_SubMath = 0x20,
 };
 
 

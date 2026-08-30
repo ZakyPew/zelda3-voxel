@@ -85,11 +85,20 @@ static void VoxelCube(VoxelVertex *vertices, int *count, float x, float y, float
 typedef struct VoxelCell {
   float r, g, b;  // terrain color (side shading + fill under actors/UI)
   float height;
+  bool upper;     // indoors: cell's pixels mostly come from the upper level (BG2)
 } VoxelCell;
 
 // Terrain profile from the game's tile attribute maps: walls rise, floors
 // stay flat, water recedes, pits drop out. Luminance only adds gentle relief
 // within a class, so busy tile art no longer produces corrugated ground.
+static float VoxelAttrGroundHeight(float lum, float hs) {
+  return .035f + lum * hs * .08f;
+}
+
+static float VoxelAttrWallHeight(float lum, float hs) {
+  return .045f + hs * (.16f + lum * .08f);
+}
+
 static float VoxelAttrHeight(uint8 a, float lum, float hs) {
   if (a == 0x20)
     return kCellVoid;                                     // pit
@@ -97,28 +106,62 @@ static float VoxelAttrHeight(uint8 a, float lum, float hs) {
     return .015f;                                         // deep water
   if (a == 0x09)
     return .03f;                                          // shallow water
-  if ((a >= 0x01 && a <= 0x03) || (a >= 0x10 && a < 0x1C))
-    return .045f + hs * (.16f + lum * .08f);               // walls, furniture, sloped corners
+  if (a >= 0x01 && a <= 0x03)
+    return VoxelAttrWallHeight(lum, hs);                  // solid walls
   if (a >= 0x28 && a <= 0x2F)
     return .04f + hs * .16f;                              // ledges
   if ((a >= 0x50 && a <= 0x57) || (a >= 0x70 && a <= 0x7F) || a == 0x66 || a == 0x67)
     return .035f + hs * (.075f + lum * .035f);             // furniture, bushes, rocks, pots, pegs
   if (a == 0x0D)
     return .04f + hs * .10f;                              // spikes
-  return .035f + lum * hs * .08f;                         // walkable ground
+  // Everything else is walkable ground - including 0x14-0x17, which are
+  // plain "nothing" tiles in the game's collision code, not slopes.
+  return VoxelAttrGroundHeight(lum, hs);
 }
 
 static bool VoxelAttrIsSolid(uint8 a) {
-  return (a >= 0x01 && a <= 0x03) || (a >= 0x10 && a < 0x1C) ||
+  return (a >= 0x01 && a <= 0x03) ||
          (a >= 0x50 && a <= 0x57) || (a >= 0x70 && a <= 0x7F) ||
          a == 0x66 || a == 0x67;
 }
 
+// Diagonal wall corner tiles: 0x10-0x13 inner and 0x18-0x1B outer variants.
+// Orientation is attr&3, matching the game's kSlopedTile collision tables
+// (tile-local x=0 west, y=0 north): 0 = NW triangle solid (x+y <= 7),
+// 1 = NE (y <= x), 2 = SW (y >= x), 3 = SE (x+y >= 7).
+static bool VoxelAttrIsSlope(uint8 a) {
+  return (a >= 0x10 && a <= 0x13) || (a >= 0x18 && a <= 0x1B);
+}
+
+// Fraction of a cell's world rect covered by a slope tile's solid triangle,
+// estimated from the four corners plus the center.
+static float VoxelSlopeFraction(uint8 a, int wx, int wy, int w, int h) {
+  int solid = 0;
+  for (int s = 0; s < 5; s++) {
+    int x, y;
+    if (s < 4)
+      x = (wx + (s & 1) * (w - 1)) & 7, y = (wy + (s >> 1) * (h - 1)) & 7;
+    else
+      x = (wx + w / 2) & 7, y = (wy + h / 2) & 7;
+    switch (a & 3) {
+      case 0: solid += x + y <= 7; break;  // NW solid
+      case 1: solid += y <= x; break;      // NE solid
+      case 2: solid += y >= x; break;      // SW solid
+      default: solid += x + y >= 7; break; // SE solid
+    }
+  }
+  return solid * (1.0f / 5.0f);
+}
+
 // Tile attribute at a world-pixel position, mirroring the game's own
-// collision lookups (read-only; no game state is touched).
-static uint8 VoxelTileAttrAt(int wx, int wy) {
+// collision lookups (read-only; no game state is touched). Indoors the
+// attribute table has two halves: +0 describes the PPU BG2 tilemap (the
+// upper level in two-level rooms) and +0x1000 the PPU BG1 tilemap (the
+// lower level), so callers pass which layer won the pixel.
+static uint8 VoxelTileAttrAt(int wx, int wy, bool bg1_layer) {
   if (player_is_indoors)
-    return dung_bg2_attr_table[((wx & 0x1f8) >> 3) + ((wy & 0x1f8) << 3)];
+    return dung_bg2_attr_table[((wx & 0x1f8) >> 3) + ((wy & 0x1f8) << 3) +
+                               (bg1_layer ? 0x1000 : 0)];
   return Overworld_GetTileAttributeAtLocation((uint16)(wx >> 3), (uint16)wy);
 }
 
@@ -135,8 +178,10 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // Anchor the sampling grid to the world, not the screen: cell boundaries
   // stay glued to the same map pixels while the game scrolls, so terrain
   // heights ride along smoothly instead of flickering as the grid resamples.
-  const int wx0 = (int)(uint16)BG2HOFS_copy2 - extra_left;  // world x at frame x=0
-  const int wy0 = (int)(uint16)BG2VOFS_copy2;               // world y at frame y=0
+  // BG2HOFS_copy (not _copy2) is what the PPU actually displayed - the two
+  // differ by the shake offset during quake/rumble effects.
+  const int wx0 = (int)(uint16)BG2HOFS_copy - extra_left;  // world x at frame x=0
+  const int wy0 = (int)(uint16)BG2VOFS_copy;               // world y at frame y=0
   int gx = wx0 % snes_step, gy = wy0 % snes_step;
   if (gx < 0) gx += snes_step;
   if (gy < 0) gy += snes_step;
@@ -154,6 +199,7 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
     return;
   }
   const float height_scale = g_config.voxel_height * .01f;
+  unsigned bg1_world_total = 0, world_total = 0;
   for (int row = 0; row < rows; row++) {
     for (int col = 0; col < cols; col++) {
       int fx0 = fx_start + col * step, fy0 = fy_start + row * step;
@@ -162,7 +208,7 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       int y1 = fy0 + step < height ? fy0 + step : height;
       VoxelCell *c = &cells[row * cols + col];
       unsigned wr = 0, wg = 0, wb = 0, wn = 0;
-      unsigned an = 0, un = 0;
+      unsigned an = 0, un = 0, w1 = 0, w2 = 0;
       for (int y = y0; y < y1; y++) {
         const uint32 *line = (const uint32 *)(pixels + y * pitch);
         for (int x = x0; x < x1; x++) {
@@ -176,14 +222,17 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
             un++;  // UI composites flat afterwards; hides the ground here
           } else {
             wb += p & 255, wg += (p >> 8) & 255, wr += (p >> 16) & 255, wn++;
+            w1 += layer == 0, w2 += layer == 1;  // BG1 (lower) vs BG2 (upper)
           }
         }
       }
+      bg1_world_total += w1, world_total += wn;
       // Cells that also contain UI pixels still build terrain from their
       // world pixels: the terrain-top shader never shows UI-tagged pixels
       // (it falls back to the cell color there), so dialogue glyphs and the
       // HUD cannot contaminate the ground, and the world stays continuous
       // beneath them instead of tearing holes.
+      c->upper = player_is_indoors && w2 >= w1;
       if (wn) {
         c->r = (float)wr / (wn * 255.0f);
         c->g = (float)wg / (wn * 255.0f);
@@ -192,17 +241,33 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
         if (luminance < .025f) {
           c->height = kCellVoid;
         } else if (use_attr) {
-          uint8 attr = VoxelTileAttrAt(wx0 + (x0 + x1) / (2 * rscale),
-                                       wy0 + (y0 + y1) / (2 * rscale));
-          c->height = VoxelAttrHeight(attr, luminance, height_scale);
-          // Dungeon furniture often shares the collision class used by
-          // solid walls. Keep those interior tiles as shallow platforms;
-          // the room perimeter remains tall and provides the diorama rim.
-          if (player_is_indoors && VoxelAttrIsSolid(attr) &&
-              x0 > 24 && x1 < width - 24 && y0 > 24 && y1 < height - 24)
-            // A middle profile keeps beds and tables dimensional without
-            // turning their shared solid collision tiles into tall pillars.
-            c->height = .030f + height_scale * (.035f + luminance * .015f);
+          // In two-level dungeon rooms the winning PPU layer says which
+          // floor a pixel shows: BG2 = upper walkway (attr half +0), BG1 =
+          // the floor below (attr half +0x1000).
+          bool bg1_layer = player_is_indoors && w1 > w2;
+          int cwx = wx0 + (x0 + x1) / (2 * rscale);
+          int cwy = wy0 + (y0 + y1) / (2 * rscale);
+          uint8 attr = VoxelTileAttrAt(cwx, cwy, bg1_layer);
+          if (VoxelAttrIsSlope(attr)) {
+            // Diagonal wall corner: blend ground and wall height by how
+            // much of the cell the solid triangle covers, so corners
+            // chamfer instead of rendering as full square pillars.
+            float gh = VoxelAttrGroundHeight(luminance, height_scale);
+            float wh = VoxelAttrWallHeight(luminance, height_scale);
+            float frac = VoxelSlopeFraction(attr, wx0 + x0 / rscale,
+                                            wy0 + y0 / rscale,
+                                            (x1 - x0) / rscale,
+                                            (y1 - y0) / rscale);
+            c->height = gh + (wh - gh) * frac;
+          } else {
+            c->height = VoxelAttrHeight(attr, luminance, height_scale);
+            // Dungeon furniture often shares the collision class used by
+            // solid walls. Keep those interior tiles as shallow platforms;
+            // the room perimeter remains tall and provides the diorama rim.
+            if (player_is_indoors && VoxelAttrIsSolid(attr) &&
+                x0 > 24 && x1 < width - 24 && y0 > 24 && y1 < height - 24)
+              c->height = .030f + height_scale * (.035f + luminance * .015f);
+          }
         } else {
           c->height = .05f + luminance * height_scale;
         }
@@ -214,6 +279,15 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
         c->height = (an || un) ? kCellUnknown : kCellVoid;
       }
     }
+  }
+
+  // Two-level rooms: raise everything on the upper level so walkways read
+  // as elevated above the floor seen through and beside them. Detected by a
+  // meaningful share of lower-level (BG1) world pixels in the frame.
+  if (player_is_indoors && bg1_world_total * 50 > world_total) {
+    for (int i = 0; i < cols * rows; i++)
+      if (cells[i].height >= 0.0f && cells[i].upper)
+        cells[i].height += height_scale * .12f;
   }
 
   // Ground hidden behind actors or UI inherits the nearest resolved cell in
@@ -240,8 +314,10 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // keeps the voxelized room from floating in empty space.
   VoxelCube(vertices, &count, -1.0f, -0.035f, -1.0f, 2.0f, .035f, 2.0f,
             .018f, .028f, .075f, 0, 0, 0, 0, kVoxelTex_None);
-  // Terrain cubes tile seamlessly and their tops sample the frame's own
+  // Terrain cells tile seamlessly and their tops sample the frame's own
   // pixels, so the ground keeps its full pixel-art detail at any block size.
+  // Side faces are emitted only down to the neighboring cell's height, so
+  // flat ground produces no hidden interior walls and no coplanar overdraw.
   const float pxw = 2.0f / width, pxh = 2.0f / height;  // world units per frame px
   const float tw = 1.0f / width, th = 1.0f / height;
   for (int row = 0; row < rows; row++) {
@@ -255,9 +331,32 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       int y1 = fy0 + step < height ? fy0 + step : height;
       if (x0 >= x1 || y0 >= y1)
         continue;
-      VoxelCube(vertices, &count, -1.0f + x0 * pxw, 0.0f, -1.0f + y0 * pxh,
-                (x1 - x0) * pxw, c->height, (y1 - y0) * pxh, c->r, c->g, c->b,
-                x0 * tw, y0 * th, x1 * tw, y1 * th, kVoxelTex_Terrain);
+      float px0 = -1.0f + x0 * pxw, px1 = -1.0f + x1 * pxw;
+      float pz0 = -1.0f + y0 * pxh, pz1 = -1.0f + y1 * pxh;
+      float h = c->height;
+      float u0 = x0 * tw, v0 = y0 * th, u1 = x1 * tw, v1 = y1 * th;
+      float r = c->r, g = c->g, b = c->b;
+      VoxelPush(vertices, &count, px0, h, pz0, r, g, b, u0, v0, kVoxelTex_Terrain);
+      VoxelPush(vertices, &count, px1, h, pz0, r, g, b, u1, v0, kVoxelTex_Terrain);
+      VoxelPush(vertices, &count, px1, h, pz1, r, g, b, u1, v1, kVoxelTex_Terrain);
+      VoxelPush(vertices, &count, px0, h, pz0, r, g, b, u0, v0, kVoxelTex_Terrain);
+      VoxelPush(vertices, &count, px1, h, pz1, r, g, b, u1, v1, kVoxelTex_Terrain);
+      VoxelPush(vertices, &count, px0, h, pz1, r, g, b, u0, v1, kVoxelTex_Terrain);
+      float ns = row + 1 < rows ? cells[(row + 1) * cols + col].height : kCellVoid;
+      float ne = col + 1 < cols ? cells[row * cols + col + 1].height : kCellVoid;
+      float nw = col > 0 ? cells[row * cols + col - 1].height : kCellVoid;
+      if (ns < 0.0f) ns = 0.0f;
+      if (ne < 0.0f) ne = 0.0f;
+      if (nw < 0.0f) nw = 0.0f;
+      if (h > ns + .0005f)
+        VoxelQuad(vertices, &count, px0,ns,pz1, px1,ns,pz1, px1,h,pz1, px0,h,pz1,
+                  r*.72f, g*.72f, b*.72f);
+      if (h > ne + .0005f)
+        VoxelQuad(vertices, &count, px1,ne,pz0, px1,ne,pz1, px1,h,pz1, px1,h,pz0,
+                  r*.52f, g*.52f, b*.52f);
+      if (h > nw + .0005f)
+        VoxelQuad(vertices, &count, px0,nw,pz1, px0,nw,pz0, px0,h,pz0, px0,h,pz1,
+                  r*.62f, g*.62f, b*.62f);
     }
   }
 
@@ -266,8 +365,13 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // becomes one upright quad textured straight from the frame. The fragment
   // shader discards non-sprite pixels, so every actor is its exact 2D art
   // standing at its own depth, and separate actors no longer share a plane.
+  // Shadows collect in their own buffer so they can draw after everything
+  // else with depth writes off (a shadow must never occlude an actor).
+  VoxelVertex shadow_verts[128 * 6];
+  int shadow_count = 0;
   {
     Ppu *ppu = g_zenv.ppu;
+    const int vis_h = height / rscale;  // 224, or 240 in extend_y mode
     int rx0[128], ry0[128], rx1[128], ry1[128], group[128];
     int n = 0;
     for (int i = 0; i < 128; i++) {
@@ -279,8 +383,8 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       int size = (high >> 1 & 1) ? 16 : 8;
       int x = (ppu->oam[idx] & 0xff) + (high & 1) * 256;
       x -= (x >= 256 + extra_left) * 512;
-      int sy = yy < 224 ? yy : yy - 256;
-      if (x + size <= -extra_left || x >= 256 + extra_left || sy + size <= 0 || sy >= 224)
+      int sy = yy < vis_h ? yy : yy - 256;
+      if (x + size <= -extra_left || x >= 256 + extra_left || sy + size <= 0 || sy >= vis_h)
         continue;
       rx0[n] = x, ry0[n] = sy, rx1[n] = x + size, ry1[n] = sy + size;
       group[n] = n, n++;
@@ -319,6 +423,23 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       if (fy1 > height) fy1 = height;
       if (fx0 >= fx1 || fy0 >= fy1)
         continue;
+      // Skip clusters with no composited sprite pixels at all (entries fully
+      // hidden behind BG tiles or pointing at transparent tiles) - otherwise
+      // they'd cast phantom shadows with no actor above them.
+      bool any_visible = false;
+      for (int y = fy0; y < fy1 && !any_visible; y++) {
+        const uint32 *line = (const uint32 *)(pixels + y * pitch);
+        for (int x = fx0; x < fx1; x++) {
+          uint32 layer = (line[x] >> 24) & kPpuPixelTag_LayerMask;
+          if (line[x] >> 24 >= kPpuPixelTag_Valid &&
+              (layer == kPpuPixelTag_Sprite || layer == kPpuPixelTag_SpriteNoMath)) {
+            any_visible = true;
+            break;
+          }
+        }
+      }
+      if (!any_visible)
+        continue;
       // Ground height under the cluster's feet, from the terrain grid.
       int gcol = ((fx0 + fx1) / 2 - fx_start) / step;
       int grow = (fy1 - 1 - fy_start) / step;
@@ -329,21 +450,24 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       float cell_h = cells[grow * cols + gcol].height;
       float ground = cell_h >= 0.0f ? cell_h : 0.0f;
       float px0 = -1.0f + fx0 * pxw, px1 = -1.0f + fx1 * pxw;
-      // Nudged forward so the quad never shares a plane with terrain faces.
-      float pz = -1.0f + fy1 * pxh + step * pxh * .2f;
+      // Nudged forward so the quad never shares a plane with terrain faces;
+      // the extra .37px keeps the offset non-commensurate with the cell grid
+      // for every voxel size, so it can never land back on a face plane.
+      float pz = -1.0f + fy1 * pxh + (step * .2f + .37f) * pxh;
       float h = (fy1 - fy0) * pxw;  // square source pixels stay square upright
       float u0 = fx0 * tw, u1 = fx1 * tw;
       float v0 = fy0 * th, v1 = fy1 * th;
-      // Translucent contact shadow on the ground at the actor's feet.
+      // Translucent contact shadow on the ground at the actor's feet. The
+      // uv corners span 0..1 so the shader can shape a soft radial falloff.
       float sy = ground + 0.004f;
       float z0 = pz - step * pxh * .6f, z1 = pz + step * pxh * .35f;
       float mx = (px1 - px0) * .08f;  // slight horizontal inset
-      VoxelPush(vertices, &count, px0 + mx, sy, z0, 0,0,0, 0,0, kVoxelTex_Shadow);
-      VoxelPush(vertices, &count, px1 - mx, sy, z0, 0,0,0, 0,0, kVoxelTex_Shadow);
-      VoxelPush(vertices, &count, px1 - mx, sy, z1, 0,0,0, 0,0, kVoxelTex_Shadow);
-      VoxelPush(vertices, &count, px0 + mx, sy, z0, 0,0,0, 0,0, kVoxelTex_Shadow);
-      VoxelPush(vertices, &count, px1 - mx, sy, z1, 0,0,0, 0,0, kVoxelTex_Shadow);
-      VoxelPush(vertices, &count, px0 + mx, sy, z1, 0,0,0, 0,0, kVoxelTex_Shadow);
+      VoxelPush(shadow_verts, &shadow_count, px0 + mx, sy, z0, 0,0,0, 0,0, kVoxelTex_Shadow);
+      VoxelPush(shadow_verts, &shadow_count, px1 - mx, sy, z0, 0,0,0, 1,0, kVoxelTex_Shadow);
+      VoxelPush(shadow_verts, &shadow_count, px1 - mx, sy, z1, 0,0,0, 1,1, kVoxelTex_Shadow);
+      VoxelPush(shadow_verts, &shadow_count, px0 + mx, sy, z0, 0,0,0, 0,0, kVoxelTex_Shadow);
+      VoxelPush(shadow_verts, &shadow_count, px1 - mx, sy, z1, 0,0,0, 1,1, kVoxelTex_Shadow);
+      VoxelPush(shadow_verts, &shadow_count, px0 + mx, sy, z1, 0,0,0, 0,1, kVoxelTex_Shadow);
       VoxelPush(vertices, &count, px0, ground,     pz, 0,0,0, u0, v1, kVoxelTex_Actor);
       VoxelPush(vertices, &count, px1, ground,     pz, 0,0,0, u1, v1, kVoxelTex_Actor);
       VoxelPush(vertices, &count, px1, ground + h, pz, 0,0,0, u1, v0, kVoxelTex_Actor);
@@ -352,6 +476,10 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       VoxelPush(vertices, &count, px0, ground + h, pz, 0,0,0, u0, v0, kVoxelTex_Actor);
     }
   }
+  // Shadows go last in the buffer; they draw with depth writes disabled.
+  const int opaque_count = count;
+  memcpy(vertices + count, shadow_verts, shadow_count * sizeof(*shadow_verts));
+  count += shadow_count;
 
   glBindVertexArray(g_voxel_VAO);
   glBindBuffer(GL_ARRAY_BUFFER, g_voxel_VBO);
@@ -369,12 +497,22 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
               g_config.voxel_pitch * (3.14159265f / 180.0f));
   glUniform1f(glGetUniformLocation(g_voxel_program, "uZoom"),
               g_config.voxel_zoom * .01f);
+  // Lightning: the rain overlay flips CGADSUB from half-add (0x72) to
+  // full-add (0x32) on flash frames; brighten the whole diorama with it so
+  // lightning illuminates the scene instead of just retinting the ground.
+  glUniform1f(glGetUniformLocation(g_voxel_program, "uFlash"),
+              CGADSUB_copy == 0x32 ? 1.35f : 1.0f);
   glViewport(viewport_x, viewport_y, viewport_width, viewport_height);
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-  glDrawArrays(GL_TRIANGLES, 0, count);
+  glDrawArrays(GL_TRIANGLES, 0, opaque_count);
+  // Shadows: depth-tested against the scene but never writing depth, so a
+  // raised shadow can't punch a hole through an actor standing behind it.
+  glDepthMask(GL_FALSE);
+  glDrawArrays(GL_TRIANGLES, opaque_count, count - opaque_count);
+  glDepthMask(GL_TRUE);
   glDisable(GL_BLEND);
   glDisable(GL_DEPTH_TEST);
   free(vertices);
@@ -427,12 +565,14 @@ static void OpenGLRenderer_DrawUiOverlay(int viewport_x, int viewport_y,
         else if (++gap > tolerance)
           break;
       }
-      int pad = 5 * rscale;
+      int pad = 8 * rscale;
       first = IntMax(first - pad, 0);
       last = IntMin(last + pad + 1, g_draw_height);
       int sy = viewport_y + viewport_height - last * viewport_height / g_draw_height;
       int sh = (last - first) * viewport_height / g_draw_height;
       glUniform1i(glGetUniformLocation(g_hud_program, "uScrim"), 1);
+      glUniform2f(glGetUniformLocation(g_hud_program, "uScrimBand"),
+                  (float)first / g_draw_height, (float)last / g_draw_height);
       glEnable(GL_BLEND);
       glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       glEnable(GL_SCISSOR_TEST);
@@ -541,9 +681,11 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     out vec4 FragColor;
     uniform sampler2D texture1;
     uniform int uHudIsWorld;
+    uniform float uFlash;
     void main() {
       if (TexData.z > 2.5) {
-        FragColor = vec4(0.0, 0.0, 0.0, 0.34);
+        float d = length(TexData.xy - vec2(0.5)) * 2.0;
+        FragColor = vec4(0.0, 0.0, 0.0, 0.42 * smoothstep(1.0, 0.35, d));
         return;
       }
       vec3 col = Color;
@@ -559,7 +701,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
           col = t.rgb;
         }
       }
-      FragColor = vec4(col, 1.0);
+      FragColor = vec4(min(col * uFlash, vec3(1.0)), 1.0);
     }
   );
   static const GLchar *voxel_fs_es = "#version 300 es\n" CODE(
@@ -569,9 +711,11 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     out vec4 FragColor;
     uniform sampler2D texture1;
     uniform int uHudIsWorld;
+    uniform float uFlash;
     void main() {
       if (TexData.z > 2.5) {
-        FragColor = vec4(0.0, 0.0, 0.0, 0.34);
+        float d = length(TexData.xy - vec2(0.5)) * 2.0;
+        FragColor = vec4(0.0, 0.0, 0.0, 0.42 * smoothstep(1.0, 0.35, d));
         return;
       }
       vec3 col = Color;
@@ -587,7 +731,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
           col = t.rgb;
         }
       }
-      FragColor = vec4(col, 1.0);
+      FragColor = vec4(min(col * uFlash, vec3(1.0)), 1.0);
     }
   );
   const GLchar *voxel_vs = g_opengl_es ? voxel_vs_es : voxel_vs_core;
@@ -728,9 +872,12 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   in vec2 TexCoord;
   uniform sampler2D texture1;
   uniform int uScrim;
+  uniform vec2 uScrimBand;
   void main() {
     if (uScrim == 1) {
-      FragColor = vec4(0.0, 0.0, 0.0, 0.55);
+      float t = (TexCoord.y - uScrimBand.x) / max(uScrimBand.y - uScrimBand.x, 1e-4);
+      float a = 0.55 * smoothstep(0.0, 0.16, t) * (1.0 - smoothstep(0.84, 1.0, t));
+      FragColor = vec4(0.0, 0.0, 0.0, a);
       return;
     }
     vec4 color = texture(texture1, TexCoord);
@@ -745,9 +892,12 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   in vec2 TexCoord;
   uniform sampler2D texture1;
   uniform int uScrim;
+  uniform vec2 uScrimBand;
   void main() {
     if (uScrim == 1) {
-      FragColor = vec4(0.0, 0.0, 0.0, 0.55);
+      float t = (TexCoord.y - uScrimBand.x) / max(uScrimBand.y - uScrimBand.x, 1e-4);
+      float a = 0.55 * smoothstep(0.0, 0.16, t) * (1.0 - smoothstep(0.84, 1.0, t));
+      FragColor = vec4(0.0, 0.0, 0.0, a);
       return;
     }
     vec4 color = texture(texture1, TexCoord);

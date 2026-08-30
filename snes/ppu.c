@@ -914,16 +914,19 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
       do {
         uint32 color = ppu->cgram[ppu->bgBuffers[0].data[i] & 0xff], color2;
         uint8 main_layer = (ppu->bgBuffers[0].data[i] >> 8) & 0xf;
+        uint32 tag = kPpuPixelTag_Valid | main_layer;
         uint32 r = color & clip_color_mask;
         uint32 g = (color >> 5) & clip_color_mask;
         uint32 b = (color >> 10) & clip_color_mask;
         uint8 *color_map = ppu->brightnessMult;
         if (math_enabled_cur & (1 << main_layer)) {
           if (math_enabled_cur & 0x100) {  // addSubscreen ?
-            if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
+            if ((ppu->bgBuffers[1].data[i] & 0xff) != 0) {
               color2 = ppu->cgram[ppu->bgBuffers[1].data[i] & 0xff], color_map = half_color_map;
-            else  // Don't halve if ppu->addSubscreen && backdrop
+              tag |= kPpuPixelTag_SubMath;
+            } else {  // Don't halve if ppu->addSubscreen && backdrop
               color2 = fixed_color;
+            }
           } else {
             color2 = fixed_color, color_map = half_color_map;
           }
@@ -938,7 +941,7 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
             b += b2;
           }
         }
-        dst[0] = (uint32)(kPpuPixelTag_Valid | main_layer) << 24 |
+        dst[0] = tag << 24 |
                  color_map[b] | color_map[g] << 8 | color_map[r] << 16;
       } while (dst++, ++i < right);
     }
