@@ -154,6 +154,32 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
     return;
   }
   const float height_scale = g_config.voxel_height * .01f;
+  // Dialogue is drawn after the voxel scene.  Its BG3 glyphs do not cover
+  // every pixel in their text box, so sampling only the glyph pixels lets
+  // nearby terrain leak into the space immediately above the message.  Find
+  // the lower BG3 span first and reserve that band for the flat UI pass.
+  const bool mask_dialogue_overlay = !g_config.voxelize_hud &&
+      main_module_index == 14 && submodule_index == 2;
+  int dialogue_y0 = height, dialogue_y1 = -1;
+  if (mask_dialogue_overlay) {
+    const int hud_bottom = g_config.voxel_hud_height * rscale;
+    for (int y = hud_bottom; y < height; y++) {
+      const uint32 *line = (const uint32 *)(pixels + y * pitch);
+      for (int x = 0; x < width; x++) {
+        uint32 tag = line[x] >> 24;
+        if (tag >= kPpuPixelTag_Valid &&
+            (tag & kPpuPixelTag_LayerMask) == kPpuPixelTag_Bg3) {
+          if (y < dialogue_y0) dialogue_y0 = y;
+          if (y > dialogue_y1) dialogue_y1 = y;
+        }
+      }
+    }
+    if (dialogue_y1 >= 0) {
+      // Include the untagged edge around the box, rounded to the voxel grid.
+      dialogue_y0 = dialogue_y0 > step ? dialogue_y0 - step : 0;
+      dialogue_y1 = dialogue_y1 + step < height ? dialogue_y1 + step : height;
+    }
+  }
 
   for (int row = 0; row < rows; row++) {
     for (int col = 0; col < cols; col++) {
@@ -161,6 +187,12 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       int x0 = fx0 < 0 ? 0 : fx0, y0 = fy0 < 0 ? 0 : fy0;
       int x1 = fx0 + step < width ? fx0 + step : width;
       int y1 = fy0 + step < height ? fy0 + step : height;
+      VoxelCell *c = &cells[row * cols + col];
+      if (dialogue_y1 >= 0 && y1 > dialogue_y0 && y0 < dialogue_y1) {
+        c->r = c->g = c->b = 0.0f;
+        c->height = kCellVoid;
+        continue;
+      }
       unsigned wr = 0, wg = 0, wb = 0, wn = 0;
       unsigned an = 0, un = 0;
       for (int y = y0; y < y1; y++) {
@@ -179,7 +211,6 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
           }
         }
       }
-      VoxelCell *c = &cells[row * cols + col];
       if (wn) {
         c->r = (float)wr / (wn * 255.0f);
         c->g = (float)wg / (wn * 255.0f);
@@ -196,13 +227,18 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
           // the room perimeter remains tall and provides the diorama rim.
           if (player_is_indoors && VoxelAttrIsSolid(attr) &&
               x0 > 24 && x1 < width - 24 && y0 > 24 && y1 < height - 24)
-            c->height = .022f + height_scale * (.018f + luminance * .008f);
+            // A middle profile keeps beds and tables dimensional without
+            // turning their shared solid collision tiles into tall pillars.
+            c->height = .030f + height_scale * (.035f + luminance * .015f);
         } else {
           c->height = .05f + luminance * height_scale;
         }
       } else {
         c->r = c->g = c->b = 0.0f;
-        c->height = (an || un) ? kCellUnknown : kCellVoid;
+        // Actors need a reconstructed floor to stand on. UI is composited in
+        // a later flat pass, so it should cut a clean hole instead of pulling
+        // neighboring terrain into its letters and borders.
+        c->height = an ? kCellUnknown : kCellVoid;
       }
     }
   }
