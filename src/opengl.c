@@ -2,6 +2,7 @@
 #include <SDL.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <math.h>
 #include "types.h"
 #include "util.h"
 #include "glsl_shader.h"
@@ -33,6 +34,10 @@ static int g_world_ox, g_world_oy;          // world coords of atlas (0,0)
 static uint32 g_world_key;                  // scene identity for rebuilds
 static uint32 g_world_frame;                // frame counter for refreshes
 static bool g_world_valid;
+
+// Chase camera: yaw follows Link's facing, pivot follows his position.
+static float g_chase_yaw, g_chase_px, g_chase_pz;
+static bool g_chase_snap = true;
 
 // Per-fragment texturing modes, carried in the third uv component. The frame
 // texture keeps its per-pixel layer tag in the alpha byte, so the fragment
@@ -486,8 +491,11 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   // diorama sits inside a larger world instead of ending at the screen.
   // Margins are multiples of every supported voxel size to keep alignment.
   const bool world_ok = use_attr && VoxelWorldAtlas_Refresh();
+  // Follow cameras need world in every direction (the view can face any way).
+  const int cam = world_ok ? g_config.voxel_camera : 0;
+  const bool chase = cam > 0, first_person = cam == 2;
   const int ext_side = world_ok ? 96 : 0, ext_top = world_ok ? 96 : 0;
-  const int ext_bottom = world_ok ? 48 : 0;
+  const int ext_bottom = world_ok ? (chase ? 96 : 48) : 0;
   const int fx_start = -gx * rscale - ext_side * rscale;
   const int fy_start = -gy * rscale - ext_top * rscale;
   const int cols = (width + ext_side * rscale - fx_start + step - 1) / step;
@@ -633,6 +641,37 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
     VoxelSolveTerraces(cells, cols, rows, wx0, wy0, fx_start, fy_start,
                        step, rscale, snes_step, .02f + height_scale * .16f);
 
+  // Chase camera: yaw eases toward Link's facing (N/S/W/E -> 0/pi/+-pi/2)
+  // and the view pivots on his smoothed position, Pokemon-recomp style.
+  float yaw = 0.0f, pivot_x = 0.0f, pivot_z = 0.0f;
+  if (chase) {
+    static const float kFacingYaw[8] = {
+      0, 0, 3.14159265f, 0, 1.57079633f, 0, -1.57079633f, 0,
+    };
+    float target = kFacingYaw[link_direction_facing & 7];
+    float tx = -1.0f + ((int)(uint16)link_x_coord + 8 - wx0) * rscale * (2.0f / width);
+    float tz = -1.0f + ((int)(uint16)link_y_coord + 16 - wy0) * rscale * (2.0f / height);
+    if (g_chase_snap) {
+      g_chase_yaw = target, g_chase_px = tx, g_chase_pz = tz;
+      g_chase_snap = false;
+    } else {
+      float d = target - g_chase_yaw;
+      while (d > 3.14159265f) d -= 6.28318531f;
+      while (d < -3.14159265f) d += 6.28318531f;
+      g_chase_yaw += d * .12f;
+      while (g_chase_yaw > 3.14159265f) g_chase_yaw -= 6.28318531f;
+      while (g_chase_yaw < -3.14159265f) g_chase_yaw += 6.28318531f;
+      g_chase_px += (tx - g_chase_px) * .25f;
+      g_chase_pz += (tz - g_chase_pz) * .25f;
+    }
+    yaw = g_chase_yaw, pivot_x = g_chase_px, pivot_z = g_chase_pz;
+  } else {
+    g_chase_snap = true;
+  }
+  // First person: anything behind the camera plane is culled CPU-side
+  // (the projection cannot represent it), and Link's own billboard hides.
+  const float cull_sy = sinf(yaw), cull_cy = cosf(yaw);
+
   // Ground hidden behind actors or UI inherits the nearest resolved cell in
   // its row, so actors stand on plausible terrain instead of holes.
   for (int row = 0; row < rows; row++) {
@@ -700,6 +739,11 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
         u0 = x0 * tw, v0 = y0 * th, u1 = x1 * tw, v1 = y1 * th;
         mode = kVoxelTex_Terrain;
         tr = c->r, tg = c->g, tb = c->b;
+      }
+      if (first_person) {
+        float dxm = (px0 + px1) * .5f - pivot_x, dzm = (pz0 + pz1) * .5f - pivot_z;
+        if (dxm * cull_sy + dzm * cull_cy > .35f)
+          continue;
       }
       float h = c->height;
       float r = c->r, g = c->g, b = c->b;
@@ -821,6 +865,12 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       // the extra .37px keeps the offset non-commensurate with the cell grid
       // for every voxel size, so it can never land back on a face plane.
       float pz = -1.0f + fy1 * pxh + (step * .2f + .37f) * pxh;
+      if (first_person) {
+        float dxm = (px0 + px1) * .5f - pivot_x, dzm = pz - pivot_z;
+        if (dxm * cull_sy + dzm * cull_cy > .35f ||
+            dxm * dxm + dzm * dzm < .04f)
+          continue;  // behind the camera, or Link's own billboard
+      }
       float h = (fy1 - fy0) * pxw;  // square source pixels stay square upright
       float u0 = fx0 * tw, u1 = fx1 * tw;
       float v0 = fy0 * th, v1 = fy1 * th;
@@ -835,12 +885,21 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       VoxelPush(shadow_verts, &shadow_count, px0 + mx, sy, z0, 0,0,0, 0,0, kVoxelTex_Shadow);
       VoxelPush(shadow_verts, &shadow_count, px1 - mx, sy, z1, 0,0,0, 1,1, kVoxelTex_Shadow);
       VoxelPush(shadow_verts, &shadow_count, px0 + mx, sy, z1, 0,0,0, 0,1, kVoxelTex_Shadow);
-      VoxelPush(vertices, &count, px0, ground,     pz, 0,0,0, u0, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, px1, ground,     pz, 0,0,0, u1, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, px1, ground + h, pz, 0,0,0, u1, v0, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, px0, ground,     pz, 0,0,0, u0, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, px1, ground + h, pz, 0,0,0, u1, v0, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, px0, ground + h, pz, 0,0,0, u0, v0, kVoxelTex_Actor);
+      // Billboards counter-rotate by the chase yaw so they still face the
+      // camera after the scene rotation in the vertex shader.
+      float bx0 = px0, bx1 = px1, bz0 = pz, bz1 = pz;
+      if (chase) {
+        float cx = (px0 + px1) * .5f, hw = (px1 - px0) * .5f;
+        float cyw = cosf(yaw), syw = sinf(yaw);
+        bx0 = cx - hw * cyw, bz0 = pz + hw * syw;
+        bx1 = cx + hw * cyw, bz1 = pz - hw * syw;
+      }
+      VoxelPush(vertices, &count, bx0, ground,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, ground,     bz1, 0,0,0, u1, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, ground + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx0, ground,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, ground + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx0, ground + h, bz0, 0,0,0, u0, v0, kVoxelTex_Actor);
     }
   }
   // Shadows go last in the buffer; they draw with depth writes disabled.
@@ -864,10 +923,20 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
               g_config.voxelize_hud);
   glUniform1f(glGetUniformLocation(g_voxel_program, "uAspect"),
               (float)viewport_width / (float)viewport_height);
+  // Camera profiles: diorama keeps the slider pitch and a neutral pivot;
+  // chase reframes as a third-person over-the-shoulder view (low pitch,
+  // pivot pulled close so Link stands large at the lower third with the
+  // world running to the horizon); first person drops to eye level with the
+  // pivot at the camera.
   glUniform1f(glGetUniformLocation(g_voxel_program, "uPitch"),
-              g_config.voxel_pitch * (3.14159265f / 180.0f));
+              first_person ? .12f :
+              chase ? .30f : g_config.voxel_pitch * (3.14159265f / 180.0f));
   glUniform1f(glGetUniformLocation(g_voxel_program, "uZoom"),
               g_config.voxel_zoom * .01f);
+  glUniform1f(glGetUniformLocation(g_voxel_program, "uYaw"), yaw);
+  glUniform2f(glGetUniformLocation(g_voxel_program, "uPivot"), pivot_x, pivot_z);
+  glUniform1f(glGetUniformLocation(g_voxel_program, "uDist"),
+              first_person ? 2.55f : chase ? 1.6f : 0.0f);
   // Lightning: the rain overlay flips CGADSUB from half-add (0x72) to
   // full-add (0x32) on flash frames; brighten the whole diorama with it so
   // lightning illuminates the scene instead of just retinting the ground.
@@ -1012,11 +1081,18 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     uniform float uAspect;
     uniform float uPitch;
     uniform float uZoom;
+    uniform float uYaw;
+    uniform vec2 uPivot;
+    uniform float uDist;
     void main() {
       vec3 p = aPos;
+      vec2 d = p.xz - uPivot;
+      float cy = cos(uYaw), sy = sin(uYaw);
+      p.x = d.x * cy - d.y * sy;
+      p.z = d.x * sy + d.y * cy + uDist;
       float cp = cos(uPitch), sp = sin(uPitch);
       float y = p.y * cp - p.z * sp;
-      float z = 3.15 - p.z * cp - p.y * sp;
+      float z = max(3.15 - p.z * cp - p.y * sp, 0.1);
       gl_Position = vec4(p.x * 2.1 * uZoom / uAspect, (y - 0.05) * 1.7 * uZoom,
                          z - 1.0, z);
       Color = aColor;
@@ -1032,11 +1108,18 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     uniform float uAspect;
     uniform float uPitch;
     uniform float uZoom;
+    uniform float uYaw;
+    uniform vec2 uPivot;
+    uniform float uDist;
     void main() {
       vec3 p = aPos;
+      vec2 d = p.xz - uPivot;
+      float cy = cos(uYaw), sy = sin(uYaw);
+      p.x = d.x * cy - d.y * sy;
+      p.z = d.x * sy + d.y * cy + uDist;
       float cp = cos(uPitch), sp = sin(uPitch);
       float y = p.y * cp - p.z * sp;
-      float z = 3.15 - p.z * cp - p.y * sp;
+      float z = max(3.15 - p.z * cp - p.y * sp, 0.1);
       gl_Position = vec4(p.x * 2.1 * uZoom / uAspect, (y - 0.05) * 1.7 * uZoom,
                          z - 1.0, z);
       Color = aColor;

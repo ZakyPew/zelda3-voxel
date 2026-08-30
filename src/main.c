@@ -642,6 +642,12 @@ static void HandleCommand_Locked(uint32 j, bool pressed) {
     case kKeys_WindowSmaller: ChangeWindowScale(-1); break;
     case kKeys_DisplayPerf: g_display_perf ^= 1; break;
     case kKeys_ToggleRenderer: g_ppu_render_flags ^= kPpuRenderFlags_NewRenderer; break;
+    case kKeys_ToggleChase: {
+      static const char *const kCamNames[] = { "diorama", "chase (over shoulder)", "first person" };
+      g_config.voxel_camera = (g_config.voxel_camera + 1) % 3;
+      printf("Camera: %s\n", kCamNames[g_config.voxel_camera]);
+      break;
+    }
     case kKeys_ToggleVoxel:
       g_config.voxel_mode ^= 1;
       printf("Voxel presentation: %s\n", g_config.voxel_mode ? "on" : "off");

@@ -248,11 +248,30 @@ Key facts (research-confirmed):
   fades, chest/door tile mutations, and the 32 animated water tiles at char
   ids 0x1C0-0x1DF which are chr-uploaded every frame).
 
+## Camera modes
+
+`VoxelCamera=0|1|2` in `zelda3.ini` (launcher Diorama combo; key `4` cycles
+in-game; legacy `VoxelChaseCam=true` maps to 1):
+
+- 0 diorama: classic view, slider pitch, neutral pivot (bit-identical to
+  the pre-camera behavior via neutral uniforms).
+- 1 chase, third-person over-the-shoulder: pitch .30 rad, `uDist` 1.6 —
+  Link large at the lower third, world to the horizon.
+- 2 first person: pitch .12 rad, `uDist` 2.55 — eye level; cells and actors
+  behind the camera plane are culled CPU-side and Link's own billboard is
+  hidden (pivot-distance test in the cluster loop).
+
+Shared machinery: the vertex shader recenters on a smoothed pivot (Link),
+yaws toward his facing (`link_direction_facing` 0/2/4/6 = N/S/W/E -> yaw
+0/pi/+pi/2/-pi/2, eased shortest-arc .12/frame), then applies pitch/zoom.
+Actor billboards counter-rotate by the yaw CPU-side so they keep facing the
+camera; grid margins go symmetric (96px) in modes 1-2; the projection
+clamps view depth (`z = max(..., 0.1)`).
+
 ## Recommended next implementation
 
-1. Chase-camera yaw on top of the world atlas (the world now extends past
-   the frame, so a swinging camera has something to show; actors/frame
-   texturing remain screen-space and need care).
+1. Chase polish: pull the far vista margin wider in the facing direction,
+   tune uDist/pitch per feedback, consider yaw-aware actor shadows.
 2. 3D weather: rain streak billboards / fog planes driven by the overlay
    index and the SubMath tag, with pre-math ground colors.
 3. True diagonal top faces for slope cells.

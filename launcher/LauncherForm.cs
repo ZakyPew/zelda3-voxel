@@ -13,6 +13,7 @@ internal sealed class LauncherForm : Form
     private static readonly Color Soft = Color.FromArgb(197, 210, 224);
     private readonly string gameDirectory = AppContext.BaseDirectory;
     private readonly CheckBox voxel = MakeCheck("Enable voxel diorama", true);
+    private readonly ComboBox cameraMode = new();
     private readonly CheckBox flatHud = MakeCheck("Keep only HUD elements flat", true);
     private readonly CheckBox filtering = MakeCheck("Smooth texture filtering", false);
     private readonly ComboBox voxelSize = new();
@@ -129,7 +130,10 @@ internal sealed class LauncherForm : Form
     private TabPage BuildDioramaTab()
     {
         var tab = MakeSettingsTab("Diorama");
-        AddCheck(tab, voxel); AddCheck(tab, flatHud); AddCheck(tab, MakeFieldLabel("Voxel block size"));
+        AddCheck(tab, voxel);
+        AddControl(tab, MakeFieldLabel("Camera (press 4 in-game to cycle)"));
+        cameraMode.DropDownStyle = ComboBoxStyle.DropDownList; cameraMode.Items.AddRange(["Diorama", "Chase — over the shoulder", "First person"]); StyleCombo(cameraMode); AddControl(tab, cameraMode);
+        AddCheck(tab, flatHud); AddCheck(tab, MakeFieldLabel("Voxel block size"));
         voxelSize.DropDownStyle = ComboBoxStyle.DropDownList; voxelSize.Items.AddRange(["2 — Fine", "3 — Detailed", "4 — Balanced", "6 — Chunky", "8 — Extra chunky"]); StyleCombo(voxelSize); AddControl(tab, voxelSize);
         AddControl(tab, MakeFieldLabel("Extrusion height"));
         AddControl(tab, MakeSliderRow(voxelHeight, heightValue, 5, 100, 10, v => $"{v}%"));
@@ -240,6 +244,8 @@ internal sealed class LauncherForm : Form
         shader.Text = ini.Get("Graphics", "Shader", "");
         linkGraphics.Text = ini.Get("Graphics", "LinkGraphics", "");
         voxel.Checked = ReadBool(ini.Get("Graphics", "VoxelMode", "true")); flatHud.Checked = !ReadBool(ini.Get("Graphics", "VoxelizeHud", "false"));
+        var camDefault = ReadBool(ini.Get("Graphics", "VoxelChaseCam", "false")) ? 1 : 0;
+        cameraMode.SelectedIndex = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelCamera", camDefault.ToString()), out var cm) ? cm : camDefault, 0, 2);
         var size = int.TryParse(ini.Get("Graphics", "VoxelSize", "4"), out var parsedSize) ? parsedSize : 4;
         voxelSize.SelectedIndex = size switch { 2 => 0, 3 => 1, 6 => 3, 8 => 4, _ => 2 };
         voxelHeight.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelHeight", "55"), out var h) ? h : 55, 5, 100);
@@ -285,7 +291,7 @@ internal sealed class LauncherForm : Form
         ini.Set("Graphics", "EnhancedMode7", Bool(enhancedMode7.Checked)); ini.Set("Graphics", "NewRenderer", Bool(newRenderer.Checked));
         ini.Set("Graphics", "IgnoreAspectRatio", Bool(ignoreAspectRatio.Checked)); ini.Set("Graphics", "Fullscreen", fullscreen.SelectedIndex.ToString());
         ini.Set("Graphics", "WindowScale", windowScale.Value.ToString()); ini.Set("Graphics", "LinearFiltering", Bool(filtering.Checked)); ini.Set("Graphics", "NoSpriteLimits", Bool(noSpriteLimits.Checked));
-        ini.Set("Graphics", "VoxelMode", Bool(voxel.Checked)); ini.Set("Graphics", "VoxelizeHud", Bool(!flatHud.Checked)); ini.Set("Graphics", "VoxelSize", sizes[Math.Max(0, voxelSize.SelectedIndex)].ToString());
+        ini.Set("Graphics", "VoxelMode", Bool(voxel.Checked)); ini.Set("Graphics", "VoxelCamera", Math.Max(0, cameraMode.SelectedIndex).ToString()); ini.Set("Graphics", "VoxelizeHud", Bool(!flatHud.Checked)); ini.Set("Graphics", "VoxelSize", sizes[Math.Max(0, voxelSize.SelectedIndex)].ToString());
         ini.Set("Graphics", "VoxelHeight", voxelHeight.Value.ToString()); ini.Set("Graphics", "VoxelPitch", voxelPitch.Value.ToString()); ini.Set("Graphics", "VoxelZoom", voxelZoom.Value.ToString());
         if (string.IsNullOrWhiteSpace(shader.Text)) ini.Remove("Graphics", "Shader"); else ini.Set("Graphics", "Shader", shader.Text.Trim());
         if (string.IsNullOrWhiteSpace(linkGraphics.Text)) ini.Remove("Graphics", "LinkGraphics"); else ini.Set("Graphics", "LinkGraphics", linkGraphics.Text.Trim());

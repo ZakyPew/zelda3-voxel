@@ -35,6 +35,7 @@ enum {
   kKeys_ToggleVoxel,
   kKeys_VolumeUp,
   kKeys_VolumeDown,
+  kKeys_ToggleChase,
   kKeys_Total,
 };
 
@@ -70,6 +71,7 @@ typedef struct Config {
   uint8 voxel_hud_height;
   uint8 voxel_pitch;
   uint8 voxel_zoom;
+  uint8 voxel_camera;  // 0 = diorama, 1 = over-shoulder chase, 2 = first person
   bool display_perf_title;
   uint8 enable_msu;
   bool resume_msu;
