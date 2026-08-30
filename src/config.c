@@ -41,6 +41,8 @@ static const uint16 kDefaultKbdControls[kKeys_Total] = {
   _(SDLK_k), _(SDLK_l), A(SDLK_RETURN), C(SDLK_r), S(SDLK_p), _(SDLK_p), _(SDLK_TAB), _(SDLK_t), N, N, _(SDLK_f), _(SDLK_r), _(SDLK_3),
   // VolumeUp, VolumeDown, ToggleChase
   N, N, _(SDLK_4),
+  // RotateLeft, RotateRight, ZoomIn, ZoomOut
+  _(SDLK_q), _(SDLK_e), _(SDLK_EQUALS), _(SDLK_MINUS),
 };
 #undef _
 #undef A
@@ -61,6 +63,7 @@ static const KeyNameId kKeyNameId[] = {
   S(CheatLife), S(CheatKeys), S(CheatEquipment), S(CheatWalkThroughWalls),
   S(ClearKeyLog), S(StopReplay), S(Fullscreen), S(Reset),
   S(Pause), S(PauseDimmed), S(Turbo), S(ReplayTurbo), S(WindowBigger), S(WindowSmaller), S(VolumeUp), S(VolumeDown), S(DisplayPerf), S(ToggleRenderer), S(ToggleVoxel), S(ToggleChase),
+  S(RotateLeft), S(RotateRight), S(ZoomIn), S(ZoomOut),
 };
 #undef S
 #undef M
@@ -398,7 +401,7 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       g_config.voxel_zoom = (uint8)IntMax(50, IntMin(200, atoi(value)));
       return true;
     } else if (StringEqualsNoCase(key, "VoxelCamera")) {
-      g_config.voxel_camera = (uint8)IntMax(0, IntMin(2, atoi(value)));
+      g_config.voxel_camera = (uint8)IntMax(0, IntMin(3, atoi(value)));
       return true;
     } else if (StringEqualsNoCase(key, "VoxelChaseCam")) {
       // Legacy bool form of VoxelCamera.

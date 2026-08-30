@@ -276,6 +276,7 @@ static const struct RendererFuncs kSdlRendererFuncs  = {
 
 void OpenGLRenderer_Create(struct RendererFuncs *funcs, bool use_opengl_es);
 uint32 VoxelRemapJoypadForCamera(uint32 input);
+void VoxelSetCameraKey(int which, bool held);
 
 #undef main
 int main(int argc, char** argv) {
@@ -580,6 +581,12 @@ static void HandleCommand(uint32 j, bool pressed) {
     return;
   }
 
+  if (j >= kKeys_RotateLeft && j <= kKeys_ZoomOut) {
+    // Held camera keys: orbit rotation and live zoom for the voxel view.
+    VoxelSetCameraKey(j - kKeys_RotateLeft, pressed);
+    return;
+  }
+
   // Everything that might access audio state
   // (like SaveLoad and Reset) must have the lock.
   SDL_LockMutex(g_audio_mutex);
@@ -646,8 +653,10 @@ static void HandleCommand_Locked(uint32 j, bool pressed) {
     case kKeys_DisplayPerf: g_display_perf ^= 1; break;
     case kKeys_ToggleRenderer: g_ppu_render_flags ^= kPpuRenderFlags_NewRenderer; break;
     case kKeys_ToggleChase: {
-      static const char *const kCamNames[] = { "diorama", "chase (over shoulder)", "first person" };
-      g_config.voxel_camera = (g_config.voxel_camera + 1) % 3;
+      static const char *const kCamNames[] = {
+        "diorama", "chase (over shoulder)", "first person", "orbit (Q/E rotate)",
+      };
+      g_config.voxel_camera = (g_config.voxel_camera + 1) % 4;
       printf("Camera: %s\n", kCamNames[g_config.voxel_camera]);
       break;
     }

@@ -132,7 +132,7 @@ internal sealed class LauncherForm : Form
         var tab = MakeSettingsTab("Diorama");
         AddCheck(tab, voxel);
         AddControl(tab, MakeFieldLabel("Camera (press 4 in-game to cycle)"));
-        cameraMode.DropDownStyle = ComboBoxStyle.DropDownList; cameraMode.Items.AddRange(["Diorama", "Chase — over the shoulder", "First person"]); StyleCombo(cameraMode); AddControl(tab, cameraMode);
+        cameraMode.DropDownStyle = ComboBoxStyle.DropDownList; cameraMode.Items.AddRange(["Diorama", "Chase — over the shoulder", "First person", "Orbit — free camera (Q/E rotate, +/- zoom)"]); StyleCombo(cameraMode); AddControl(tab, cameraMode);
         AddCheck(tab, flatHud); AddCheck(tab, MakeFieldLabel("Voxel block size"));
         voxelSize.DropDownStyle = ComboBoxStyle.DropDownList; voxelSize.Items.AddRange(["2 — Fine", "3 — Detailed", "4 — Balanced", "6 — Chunky", "8 — Extra chunky"]); StyleCombo(voxelSize); AddControl(tab, voxelSize);
         AddControl(tab, MakeFieldLabel("Extrusion height"));
@@ -245,7 +245,7 @@ internal sealed class LauncherForm : Form
         linkGraphics.Text = ini.Get("Graphics", "LinkGraphics", "");
         voxel.Checked = ReadBool(ini.Get("Graphics", "VoxelMode", "true")); flatHud.Checked = !ReadBool(ini.Get("Graphics", "VoxelizeHud", "false"));
         var camDefault = ReadBool(ini.Get("Graphics", "VoxelChaseCam", "false")) ? 1 : 0;
-        cameraMode.SelectedIndex = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelCamera", camDefault.ToString()), out var cm) ? cm : camDefault, 0, 2);
+        cameraMode.SelectedIndex = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelCamera", camDefault.ToString()), out var cm) ? cm : camDefault, 0, 3);
         var size = int.TryParse(ini.Get("Graphics", "VoxelSize", "4"), out var parsedSize) ? parsedSize : 4;
         voxelSize.SelectedIndex = size switch { 2 => 0, 3 => 1, 6 => 3, 8 => 4, _ => 2 };
         voxelHeight.Value = Math.Clamp(int.TryParse(ini.Get("Graphics", "VoxelHeight", "55"), out var h) ? h : 55, 5, 100);

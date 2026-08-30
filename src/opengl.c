@@ -43,8 +43,17 @@ static uint8 g_overlay_last = 0xff;
 static bool g_overlay_ready;
 
 // Chase camera: yaw follows Link's facing, pivot follows his position.
+// Orbit mode instead turns the yaw with held keys, Gen1Recomp-style.
 static float g_chase_yaw, g_chase_px, g_chase_pz;
 static bool g_chase_snap = true;
+static uint8 g_camera_keys;  // bit 0 rotate left, 1 rotate right, 2 zoom in, 3 zoom out
+
+void VoxelSetCameraKey(int which, bool held) {
+  if (held)
+    g_camera_keys |= 1 << which;
+  else
+    g_camera_keys &= ~(1 << which);
+}
 
 // Uniform locations, resolved once after link.
 static struct {
@@ -652,16 +661,32 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   const bool world_ok = use_attr && VoxelWorldAtlas_Refresh();
   // Follow cameras need world in every direction (the view can face any way).
   const int cam = world_ok ? g_config.voxel_camera : 0;
-  const bool chase = cam > 0, first_person = cam == 2;
+  const bool chase = cam > 0, first_person = cam == 2, orbit = cam == 3;
+
+  // Live zoom on held keys, in every camera mode.
+  if (g_camera_keys & 4)
+    g_config.voxel_zoom = (uint8)IntMin(200, g_config.voxel_zoom + 1);
+  if (g_camera_keys & 8)
+    g_config.voxel_zoom = (uint8)IntMax(50, g_config.voxel_zoom - 1);
 
   // Chase camera state: yaw eases toward Link's facing (N/S/W/E ->
-  // 0/pi/+-pi/2) and the view pivots on his smoothed position.
+  // 0/pi/+-pi/2) - or, in orbit mode, turns freely with the held rotate
+  // keys - and the view pivots on his smoothed position.
   float yaw = 0.0f, pivot_x = 0.0f, pivot_z = 0.0f;
   if (chase) {
     static const float kFacingYaw[8] = {
       0, 0, 3.14159265f, 0, 1.57079633f, 0, -1.57079633f, 0,
     };
-    float target = kFacingYaw[link_direction_facing & 7];
+    float target;
+    if (orbit) {
+      if (g_camera_keys & 1) g_chase_yaw += .035f;
+      if (g_camera_keys & 2) g_chase_yaw -= .035f;
+      while (g_chase_yaw > 3.14159265f) g_chase_yaw -= 6.28318531f;
+      while (g_chase_yaw < -3.14159265f) g_chase_yaw += 6.28318531f;
+      target = g_chase_yaw;
+    } else {
+      target = kFacingYaw[link_direction_facing & 7];
+    }
     float tx = -1.0f + ((int)(uint16)link_x_coord + 8 - wx0) * rscale * (2.0f / width);
     float tz = -1.0f + ((int)(uint16)link_y_coord + 16 - wy0) * rscale * (2.0f / height);
     if (g_chase_snap) {

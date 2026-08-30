@@ -36,6 +36,10 @@ enum {
   kKeys_VolumeUp,
   kKeys_VolumeDown,
   kKeys_ToggleChase,
+  kKeys_RotateLeft,
+  kKeys_RotateRight,
+  kKeys_ZoomIn,
+  kKeys_ZoomOut,
   kKeys_Total,
 };
 

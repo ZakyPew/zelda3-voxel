@@ -250,8 +250,13 @@ Key facts (research-confirmed):
 
 ## Camera modes
 
-`VoxelCamera=0|1|2` in `zelda3.ini` (launcher Diorama combo; key `4` cycles
-in-game; legacy `VoxelChaseCam=true` maps to 1):
+`VoxelCamera=0|1|2|3` in `zelda3.ini` (launcher Diorama combo; key `4`
+cycles in-game; legacy `VoxelChaseCam=true` maps to 1). Mode 3 is
+"orbit", Gen1Recomp-style: the chase framing but with the yaw turned
+freely by held keys instead of Link's facing - `Q`/`E` rotate
+(kKeys_RotateLeft/Right), and `=`/`-` zoom live in every mode
+(kKeys_ZoomIn/Out nudge voxel_zoom 1%/frame; VoxelSetCameraKey carries
+the held state from main.c into the renderer). Modes:
 
 - 0 diorama: classic view, slider pitch, neutral pivot (bit-identical to
   the pre-camera behavior via neutral uniforms).
