@@ -730,7 +730,9 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
   const int rows = (height + mb * rscale - fy_start + step - 1) / step;
 
   VoxelCell *cells = malloc((size_t)cols * rows * sizeof(*cells));
-  VoxelVertex *vertices = malloc(((size_t)cols * rows * 2 + 1) * 24 * sizeof(*vertices));
+  // The +32768 tail is headroom for the non-terrain emitters that share the
+  // buffer (actor extrusion walls, rain, shadows, overlay planes).
+  VoxelVertex *vertices = malloc((((size_t)cols * rows * 2 + 1) * 24 + 32768) * sizeof(*vertices));
   if (!cells || !vertices) {
     free(cells), free(vertices);
     return;
@@ -995,7 +997,7 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
     Ppu *ppu = g_zenv.ppu;
     const int vis_h = height / rscale;  // 224, or 240 in extend_y mode
     int rx0[128], ry0[128], rx1[128], ry1[128], group[128];
-    int n = 0;
+    int n = 0, wall_quads = 0;
     // Airborne entities: the game draws actors raised by their altitude
     // (sprite_z / link_z_coord), so matching a cluster back to its entity
     // recovers the true ground spot and the height to float the billboard.
@@ -1137,18 +1139,124 @@ static void VoxelRenderer_Draw(int width, int height, const uint8 *pixels,
       // Billboards counter-rotate by the chase yaw so they still face the
       // camera after the scene rotation in the vertex shader.
       float bx0 = px0, bx1 = px1, bz0 = pz, bz1 = pz;
+      float axx = 1.0f, axz = 0.0f;   // in-plane horizontal axis
+      float nxx = 0.0f, nxz = 1.0f;   // plane normal, toward the camera
       if (chase) {
         float cx = (px0 + px1) * .5f, hw = (px1 - px0) * .5f;
         float cyw = cosf(yaw), syw = sinf(yaw);
         bx0 = cx - hw * cyw, bz0 = pz + hw * syw;
         bx1 = cx + hw * cyw, bz1 = pz - hw * syw;
+        axx = cyw, axz = -syw;
+        nxx = syw, nxz = cyw;
       }
-      VoxelPush(vertices, &count, bx0, base,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx1, base,     bz1, 0,0,0, u1, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx1, base + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx0, base,     bz0, 0,0,0, u0, v1, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx1, base + h, bz1, 0,0,0, u1, v0, kVoxelTex_Actor);
-      VoxelPush(vertices, &count, bx0, base + h, bz0, 0,0,0, u0, v0, kVoxelTex_Actor);
+      // Extruded actors: the cutout billboard is the FRONT CAP (exactly where
+      // the flat billboard used to be, so nothing shifts in any mode), a
+      // darkened copy 6 SNES px behind it is the back cap, and flat-shaded
+      // silhouette walls close the sides. From the follow and orbit cameras
+      // the actor reads as a chunky voxel figure instead of a paper standee.
+      const float depth = 6.0f * rscale * pxw;
+      VoxelPush(vertices, &count, bx0, base,     bz0, 1,1,1, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, base,     bz1, 1,1,1, u1, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, base + h, bz1, 1,1,1, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx0, base,     bz0, 1,1,1, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx1, base + h, bz1, 1,1,1, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, bx0, base + h, bz0, 1,1,1, u0, v0, kVoxelTex_Actor);
+      float kx0 = bx0 - nxx * depth, kz0 = bz0 - nxz * depth;
+      float kx1 = bx1 - nxx * depth, kz1 = bz1 - nxz * depth;
+      VoxelPush(vertices, &count, kx0, base,     kz0, .5f,.5f,.55f, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, kx1, base,     kz1, .5f,.5f,.55f, u1, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, kx1, base + h, kz1, .5f,.5f,.55f, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, kx0, base,     kz0, .5f,.5f,.55f, u0, v1, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, kx1, base + h, kz1, .5f,.5f,.55f, u1, v0, kVoxelTex_Actor);
+      VoxelPush(vertices, &count, kx0, base + h, kz0, .5f,.5f,.55f, u0, v0, kVoxelTex_Actor);
+      // Silhouette walls, one strip per boundary SNES pixel. The cluster's
+      // sprite pixels are sampled at SNES resolution into a small bitmap
+      // (center sample - the frame is a nearest upscale); pixels outside the
+      // bitmap clamp count as opaque so oversized bosses just lose their
+      // outermost walls instead of growing fake interior ones.
+      {
+        enum { kSilMax = 96 };
+        static uint8 sil[kSilMax * kSilMax];
+        int sw = cx1 - cx0, sh = cy1 - cy0;
+        if (sw > kSilMax) sw = kSilMax;
+        if (sh > kSilMax) sh = kSilMax;
+        for (int syp = 0; syp < sh; syp++) {
+          for (int sxp = 0; sxp < sw; sxp++) {
+            int fx = (cx0 + sxp + extra_left) * rscale + rscale / 2;
+            int fy = (cy0 + syp) * rscale + rscale / 2;
+            uint8 op = 0;
+            if (fx >= fx0 && fx < fx1 && fy >= fy0 && fy < fy1) {
+              uint32 p = ((const uint32 *)(pixels + fy * pitch))[fx];
+              uint32 layer = (p >> 24) & kPpuPixelTag_LayerMask;
+              op = p >> 24 >= kPpuPixelTag_Valid &&
+                   (layer == kPpuPixelTag_Sprite || layer == kPpuPixelTag_SpriteNoMath);
+            }
+            sil[syp * kSilMax + sxp] = op;
+          }
+        }
+        for (int syp = 0; syp < sh && wall_quads < 3500; syp++) {
+          const uint32 *line = NULL;
+          int fyc = (cy0 + syp) * rscale + rscale / 2;
+          if (fyc >= 0 && fyc < height)
+            line = (const uint32 *)(pixels + fyc * pitch);
+          for (int sxp = 0; sxp < sw && wall_quads < 3500; sxp++) {
+            if (!sil[syp * kSilMax + sxp])
+              continue;
+            bool wl = sxp > 0 ? !sil[syp * kSilMax + sxp - 1] : true;
+            bool wr = sxp < sw - 1 ? !sil[syp * kSilMax + sxp + 1] : true;
+            bool wu = syp > 0 ? !sil[(syp - 1) * kSilMax + sxp] : true;
+            bool wd = syp < sh - 1 ? !sil[(syp + 1) * kSilMax + sxp] : true;
+            if (!wl && !wr && !wu && !wd)
+              continue;
+            // This pixel's rect in (clipped) frame coords -> plane coords.
+            int fxA = (cx0 + sxp + extra_left) * rscale, fxB = fxA + rscale;
+            int fyA = (cy0 + syp) * rscale, fyB = fyA + rscale;
+            if (fxA < fx0) fxA = fx0;
+            if (fxB > fx1) fxB = fx1;
+            if (fyA < fy0) fyA = fy0;
+            if (fyB > fy1) fyB = fy1;
+            if (fxA >= fxB || fyA >= fyB)
+              continue;
+            float pr = .5f, pg = .5f, pb = .5f;
+            if (line) {
+              int fxc = fxA + (fxB - fxA) / 2;
+              uint32 p = line[fxc];
+              pb = (p & 255) * (1.0f / 255.0f);
+              pg = ((p >> 8) & 255) * (1.0f / 255.0f);
+              pr = ((p >> 16) & 255) * (1.0f / 255.0f);
+            }
+            float a0 = (fxA - fx0) * pxw, a1 = (fxB - fx0) * pxw;
+            float yt = base + (fy1 - fyA) * pxw, yb = base + (fy1 - fyB) * pxw;
+            float lx0 = bx0 + axx * a0, lz0 = bz0 + axz * a0;
+            float lx1 = bx0 + axx * a1, lz1 = bz0 + axz * a1;
+            float dx = nxx * depth, dz = nxz * depth;
+            if (wl) {
+              VoxelQuad(vertices, &count, lx0, yb, lz0, lx0 - dx, yb, lz0 - dz,
+                        lx0 - dx, yt, lz0 - dz, lx0, yt, lz0,
+                        pr * .62f, pg * .62f, pb * .62f);
+              wall_quads++;
+            }
+            if (wr) {
+              VoxelQuad(vertices, &count, lx1, yb, lz1, lx1 - dx, yb, lz1 - dz,
+                        lx1 - dx, yt, lz1 - dz, lx1, yt, lz1,
+                        pr * .62f, pg * .62f, pb * .62f);
+              wall_quads++;
+            }
+            if (wu) {
+              VoxelQuad(vertices, &count, lx0, yt, lz0, lx1, yt, lz1,
+                        lx1 - dx, yt, lz1 - dz, lx0 - dx, yt, lz0 - dz,
+                        pr * .86f, pg * .86f, pb * .86f);
+              wall_quads++;
+            }
+            if (wd) {
+              VoxelQuad(vertices, &count, lx0, yb, lz0, lx1, yb, lz1,
+                        lx1 - dx, yb, lz1 - dz, lx0 - dx, yb, lz0 - dz,
+                        pr * .45f, pg * .45f, pb * .45f);
+              wall_quads++;
+            }
+          }
+        }
+      }
     }
   }
   // Shadows go last in the buffer; they draw with depth writes disabled.
@@ -1503,7 +1611,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
         bool sprite = tag >= 16 && (layer == 4 || layer == 6);
         if (TexData.z > 1.5) {
           if (!sprite) discard;
-          col = t.rgb;
+          col = t.rgb * Color;
         } else if (tag >= 16 && !sprite && (layer != 2 || uHudIsWorld == 1)) {
           col = t.rgb;
         }
@@ -1547,7 +1655,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
         bool sprite = tag >= 16 && (layer == 4 || layer == 6);
         if (TexData.z > 1.5) {
           if (!sprite) discard;
-          col = t.rgb;
+          col = t.rgb * Color;
         } else if (tag >= 16 && !sprite && (layer != 2 || uHudIsWorld == 1)) {
           col = t.rgb;
         }
